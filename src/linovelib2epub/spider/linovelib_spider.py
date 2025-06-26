@@ -5,6 +5,7 @@ import re
 import sys
 import textwrap
 import time
+from time import sleep
 from typing import Dict, List, Optional, Tuple, Any
 from urllib.parse import urljoin
 
@@ -203,14 +204,55 @@ class BaseLinovelibSpider(BaseNovelWebsiteSpider):
                 # 抛异常，将当前这个 url 的抓取任务延迟到下一轮尝试
                 raise PageContentAbnormalException(msg)
 
-        def _patch_font_obfuscation(page, url):
+        def _wait_font_loaded(page, url):
             js_check = """
-            const last_p = document.querySelector('#TextContent p:last-of-type')
-            const p_style = window.getComputedStyle(last_p)
-            const p_font_style = p_style.getPropertyValue('font-family')
-            if (p_font_style && p_font_style.includes('read')) {
-                return true;
+            const targetFontName = 'read';
+            let fontLoaded = false;
+
+            for (const font of document.fonts) {
+                if (font.family === targetFontName && font.status === 'loaded') {
+                    return true;
+                }
             }
+            
+            return false;
+            """
+            font_loaded = page.run_js(js_check)
+            while not font_loaded:
+                self.logger.warning(f'Font loading of page {url} is uncompleted. Try to refresh and re-check.')
+                page.refresh()
+                page.wait.doc_loaded()
+                sleep(2)
+                font_loaded = page.run_js(js_check)
+
+            self.logger.info(f'Font loading of page {url} is completed.')
+            return font_loaded
+
+        def _wait_text_render_completed(page, url, css_selector):
+            js_check = f"""
+            return document.querySelector("{css_selector}").clientHeight > 0;
+            """
+            p_loaded = page.run_js(js_check)
+            while not p_loaded:
+                self.logger.warning(f'The obfuscated paragraph on page {url} is incomplete. Try to refresh and re-check.')
+                page.refresh()
+                page.wait.doc_loaded()
+                sleep(2)
+                p_loaded = page.run_js(js_check)
+
+            self.logger.info(f'The obfuscated paragraph on page {url} is now fully rendered.')
+            return p_loaded
+
+        def _patch_font_obfuscation(page, url):
+            # hardcode 方式实在过于脆弱，今天是倒数第二个 p，明天要是改成倒数第三个 p 呢，或者有多个混淆的文本 p 呢？
+            obfuscated_p_selector = "#TextContent p:nth-last-of-type(2)"
+            js_check = f"""
+            const target_p = document.querySelector("{obfuscated_p_selector}");  
+            const p_style = window.getComputedStyle(target_p);
+            const p_font_style = p_style.getPropertyValue('font-family');
+            if (p_font_style && p_font_style.includes('read')) {{
+                return true;
+            }}
             return false;
             """
             try:
@@ -218,13 +260,16 @@ class BaseLinovelibSpider(BaseNovelWebsiteSpider):
                     has_font_obfuscation = page.run_js(js_check)
                     if has_font_obfuscation:
                         self.logger.debug(f'The page of {url} has font obfuscation.')
-                        last_p = page.ele('css:#TextContent p:last-of-type')
-                        last_p_utf16 = last_p.text.encode('unicode-escape')
-                        self.logger.debug(f'Font obfuscation UTF-16: {last_p_utf16}')
 
-                        # save artifacts if in debug mode
-                        # '诲。'
-                        # last_p.get_screenshot()
+                        # 必须等待字体渲染完毕
+                        _wait_font_loaded(page, url)
+
+                        # 等待混淆的那个p渲染出真实高度
+                        _wait_text_render_completed(page, url, obfuscated_p_selector)
+
+                        last_p = page.ele(f'css:{obfuscated_p_selector}', timeout=10)
+                        self.logger.debug(f'The raw obfuscated text in html= {last_p.text}')
+
                         # refer doc: https://www.drissionpage.cn/ChromiumPage/screen/#%EF%B8%8F%EF%B8%8F-%EF%B8%8F%EF%B8%8F-%E5%85%83%E7%B4%A0%E6%88%AA%E5%9B%BE
                         bytes_str = last_p.get_screenshot(as_bytes='png')  # 返回截图二进制文本 `
                         image = Image.open(io.BytesIO(bytes_str))
@@ -232,7 +277,8 @@ class BaseLinovelibSpider(BaseNovelWebsiteSpider):
 
                         # remove all white-spaces and line-break on each side
                         new_text = text.replace(" ", "").strip()
-                        self.logger.debug(f'The text of this patch is: {new_text}')
+                        self.logger.debug(f'The ocr result is: {new_text}')
+                        # The text of this patch 如果为空，说明是 OCR 问题，更换 OCR 引擎可以改善。
                         # https://www.drissionpage.cn/ChromiumPage/ele_operation/#%EF%B8%8F%EF%B8%8F-%E4%BF%AE%E6%94%B9%E5%85%83%E7%B4%A0
                         # if new_text is None,then keep original text
                         # Case: https://www.linovelib.com/novel/2356/83534_2.html 「…………」 => ''
@@ -240,11 +286,11 @@ class BaseLinovelibSpider(BaseNovelWebsiteSpider):
                             # 转义 HTML
                             cleaned_html = re.sub(r'[\r\n]+', '<br>', new_text)
                             # 转义 HTML 特殊字符
-                            escaped_html = builtin_html_lib.escape(cleaned_html)
+                            escaped_text = builtin_html_lib.escape(cleaned_html)
 
-                            self.logger.debug(f'{escaped_html=}')
+                            self.logger.debug(f'The final escaped text= {escaped_text}')
                             # 这个 set 这一步有可能引发 browser 的 js execution error
-                            last_p.set.innerHTML(escaped_html)
+                            last_p.set.innerHTML(escaped_text)
 
                         # 为了测量 OCR 的准确率，在 DEBUG 模式下，将【url，段落截图，OCR 识别结果，消毒 + 转义的结果】保存到相应的临时文件夹中。
                         # 后续可能需要采用策略模式，更换不同的 OCR 引擎。
@@ -254,7 +300,10 @@ class BaseLinovelibSpider(BaseNovelWebsiteSpider):
                             pass
             except Exception as e:
                 # maybe js execution error
-                self.logger.error(f'Error occurred in _patch_font_obfuscation(): {e}')
+                self.logger.error(f'Error occurred in _patch_font_obfuscation() about page {url}: {e}')
+                # 可能的边缘情况 1
+                # ERROR    LinovelibSpiderPC Error occurred in _patch_font_obfuscation() about page
+                # https://www.linovelib.com/novel/111/14745_4.html: 该元素没有位置及大小
                 pass
 
         request_count = 0
