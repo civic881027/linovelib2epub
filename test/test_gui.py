@@ -95,3 +95,54 @@ def test_ensure_std_streams_replaces_missing_streams(monkeypatch):
 
     assert gui.sys.stdout is not None and gui.sys.stderr is not None
     gui.sys.stdout.write('windowed builds must not crash on this')
+
+
+def test_page_is_gone_only_after_the_page_has_polled_once():
+    from linovelib2epub.gui import page_is_gone
+
+    # a slow-starting browser has not polled yet, so it is never judged gone
+    assert page_is_gone(page_seen=False, seconds_since_poll=9999.0, grace=12.0) is False
+
+
+def test_page_is_gone_when_polling_stops():
+    from linovelib2epub.gui import page_is_gone
+
+    assert page_is_gone(page_seen=True, seconds_since_poll=12.5, grace=12.0) is True
+
+
+def test_page_is_not_gone_while_it_keeps_polling():
+    from linovelib2epub.gui import page_is_gone
+
+    assert page_is_gone(page_seen=True, seconds_since_poll=1.0, grace=12.0) is False
+    # a page reload pauses polling briefly and must not kill the program
+    assert page_is_gone(page_seen=True, seconds_since_poll=12.0, grace=12.0) is False
+
+
+def test_close_browser_quits_the_crawlers_driver():
+    from unittest.mock import Mock
+
+    from linovelib2epub.gui import AppState, close_browser
+
+    driver = Mock()
+    state = AppState()
+    state.crawler = Mock(_spider=Mock(_driver=driver))
+
+    assert close_browser(state) is True
+    driver.quit.assert_called_once_with()
+
+
+def test_close_browser_is_a_no_op_before_a_crawl_starts():
+    from linovelib2epub.gui import AppState, close_browser
+
+    assert close_browser(AppState()) is False
+
+
+def test_close_browser_survives_a_driver_that_refuses_to_quit():
+    from unittest.mock import Mock
+
+    from linovelib2epub.gui import AppState, close_browser
+
+    state = AppState()
+    state.crawler = Mock(_spider=Mock(_driver=Mock(quit=Mock(side_effect=OSError('browser gone')))))
+
+    assert close_browser(state) is False

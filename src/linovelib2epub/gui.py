@@ -7,6 +7,7 @@ import os
 import secrets
 import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -89,6 +90,19 @@ class AppState:
         self.volume_titles: list | None = None  # set while the user is being asked
         self.volume_answer: list | None = None
         self.volume_answered = threading.Event()
+        self.crawler = None  # the Linovelib2Epub instance, so its browser can be closed
+        self.page_seen = False  # the page has polled at least once
+        self.last_poll = 0.0
+        self.shutting_down = False
+
+    def mark_poll(self) -> None:
+        with self.lock:
+            self.page_seen = True
+            self.last_poll = time.monotonic()
+
+    def seconds_since_poll(self) -> float:
+        with self.lock:
+            return time.monotonic() - self.last_poll
 
     def add_line(self, line: str) -> None:
         with self.lock:
@@ -119,6 +133,24 @@ class StateLogHandler(logging.Handler):
             pass
 
 
+def page_is_gone(page_seen: bool, seconds_since_poll: float, grace: float = 12.0) -> bool:
+    """The page polls every second. Only judge it gone after it has polled at least once, so a
+    slow-starting browser is never mistaken for a closed one."""
+    return page_seen and seconds_since_poll > grace
+
+
+def close_browser(state: AppState) -> bool:
+    """The library never closes the Chrome it starts, so closing it is left to the caller."""
+    driver = getattr(getattr(state.crawler, '_spider', None), '_driver', None)
+    if driver is None:
+        return False
+    try:
+        driver.quit()
+    except Exception:
+        return False
+    return True
+
+
 def make_volume_selector(state: AppState):
     """Replaces the library's terminal prompt when 自選卷數 is ticked."""
 
@@ -143,7 +175,9 @@ def run_crawl(state: AppState, form: dict) -> None:
         os.chdir(form['output_dir'])
         logger_module.DEFAULT_LOG_FOLDER = os.path.join(form['output_dir'], 'logs')
         state.add_line(f'開始下載書籍 {form["book_id"]}，輸出到 {form["output_dir"]}')
-        Linovelib2Epub(**build_kwargs(form)).run()
+        crawler = Linovelib2Epub(**build_kwargs(form))
+        state.crawler = crawler
+        crawler.run()
     except BaseException as error:  # noqa: BLE001 - any failure must reach the page
         message = str(error) or type(error).__name__
         state.add_line(f'失敗：{message}')
@@ -224,6 +258,7 @@ class Handler(BaseHTTPRequestHandler):
                 cursor = int((query.get('cursor') or ['0'])[0])
             except ValueError:
                 cursor = 0
+            self.server.state.mark_poll()
             self._send_json(self.server.state.snapshot(cursor))
         else:
             self._send(404, '404'.encode('utf-8'), 'text/plain; charset=utf-8')
@@ -242,7 +277,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({'ok': True})
         elif parsed.path == '/api/quit':
             self._send_json({'ok': True})
-            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            stop_everything(self.server, '已停止，程式結束。')
         else:
             self._send(404, '404'.encode('utf-8'), 'text/plain; charset=utf-8')
 
@@ -264,6 +299,31 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({'ok': True})
 
 
+def stop_everything(server, reason: str) -> None:
+    """Close the crawl's browser, then stop serving. Crawl threads are daemons and die with the
+    process, but the browser is a separate process and would otherwise be left behind."""
+    state = server.state
+    with state.lock:
+        if state.shutting_down:
+            return
+        state.shutting_down = True
+    state.add_line(reason)
+    print(reason, flush=True)
+    if close_browser(state):
+        print('已關閉爬取用的瀏覽器。', flush=True)
+    threading.Thread(target=server.shutdown, daemon=True).start()
+
+
+def watch_page(server, grace: float = 12.0, interval: float = 1.0) -> None:
+    """Quit once the page stops polling, so closing the browser tab does not leave this running."""
+    state = server.state
+    while not state.shutting_down:
+        time.sleep(interval)
+        if page_is_gone(state.page_seen, state.seconds_since_poll(), grace):
+            stop_everything(server, '瀏覽器頁面已關閉，程式結束。')
+            return
+
+
 def serve(port: int = 0, open_browser: bool = True) -> None:
     state = AppState()
     handler = StateLogHandler(state)
@@ -280,10 +340,11 @@ def serve(port: int = 0, open_browser: bool = True) -> None:
     print('關閉這個視窗或按 Ctrl+C 可結束程式。', flush=True)
     if open_browser:
         webbrowser.open(url)
+    threading.Thread(target=watch_page, args=(server,), daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        pass
+        close_browser(state)
     finally:
         server.server_close()
 

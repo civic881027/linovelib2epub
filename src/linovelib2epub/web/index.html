@@ -48,7 +48,8 @@
   }
   button.secondary { background: transparent; color: var(--accent); }
   button:disabled { opacity: .55; cursor: default; }
-  #start { width: 100%; margin-top: 18px; padding: 11px; }
+  .actions { display: flex; gap: 10px; margin-top: 18px; }
+  #start { flex: 1; padding: 11px; }
   #log {
     height: 320px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
     background: var(--page); border: 1px solid var(--line); border-radius: 6px; padding: 12px;
@@ -108,7 +109,10 @@
       <label><input type="checkbox" id="headless" checked>隱藏瀏覽器視窗</label>
     </div>
 
-    <button id="start">開始下載</button>
+    <div class="actions">
+      <button id="start">開始下載</button>
+      <button id="quit" class="secondary">停止並結束程式</button>
+    </div>
   </div>
 
   <div class="panel" id="volumes">
@@ -133,6 +137,9 @@ const TOKEN = new URLSearchParams(location.search).get('token') || '';
 const $ = (id) => document.getElementById(id);
 let cursor = 0;
 let volumesShown = false;
+let running = false;
+let stopped = false;
+let everConnected = false;
 
 function fill(select, values, chosen) {
   select.innerHTML = '';
@@ -226,10 +233,27 @@ function showVolumes(titles) {
   $('volumes').scrollIntoView({behavior: 'smooth'});
 }
 
+$('quit').addEventListener('click', async () => {
+  if (running && !confirm('下載還在進行中，確定要停止並結束程式嗎？')) return;
+  stopped = true;
+  running = false;
+  try { await api('/api/quit', {method: 'POST'}); } catch (error) { /* it exits before replying */ }
+  showMessage('程式已結束，可以關閉這個分頁。');
+  $('start').disabled = true;
+  $('quit').disabled = true;
+});
+
+// The program exits a few seconds after this page stops polling, so warn before an accidental close.
+window.addEventListener('beforeunload', (event) => {
+  if (running && !stopped) { event.preventDefault(); event.returnValue = ''; }
+});
+
 async function poll() {
+  if (stopped) return;
   try {
     const response = await api('/api/state?cursor=' + cursor);
     const state = await response.json();
+    everConnected = true;
     cursor = state.cursor;
     if (state.lines.length) {
       const log = $('log');
@@ -239,13 +263,14 @@ async function poll() {
     }
     if (state.volumes && !volumesShown) showVolumes(state.volumes);
     if (!state.volumes && volumesShown) { $('volumes').style.display = 'none'; volumesShown = false; }
+    running = state.running;
     $('start').disabled = state.running;
     if (!state.running && state.result !== null) {
       if (state.result === '') showMessage('完成，EPUB 已輸出到 ' + state.outputDir, 'good');
       else showMessage('失敗：' + state.result, 'bad');
     }
   } catch (error) {
-    /* the local server is briefly unavailable; the next tick retries */
+    if (everConnected) showMessage('與程式的連線中斷，它可能已經結束了。', 'bad');
   }
 }
 
