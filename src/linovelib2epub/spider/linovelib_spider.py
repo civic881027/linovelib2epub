@@ -858,7 +858,9 @@ class LinovelibSpiderPC(BaseLinovelibSpider):
         self._convert_page_language(book_url)
         create_folder_if_not_exists(self.spider_settings['pickle_temp_folder'])
 
-        book_basic_info = self._crawl_book_basic_info(book_url)
+        # The site converts to Traditional purely client-side (GB_BIG5.js), so read the page the
+        # browser just converted instead of re-fetching it over HTTP (which is always Simplified).
+        book_basic_info = self._parse_book_basic_info(self._driver.html)
         if not book_basic_info:
             raise LinovelibException(f'Fetch book_basic_info of {self.spider_settings["book_id"]} failed.')
 
@@ -886,29 +888,20 @@ class LinovelibSpiderPC(BaseLinovelibSpider):
 
         return novel_whole
 
-    def _crawl_book_basic_info(self, url) -> Tuple | None:
-        result = requests_get_with_retry(self._session,
-                                         url,
-                                         headers=self.request_headers(),
-                                         retry_max=self.spider_settings['http_retries'],
-                                         timeout=self.spider_settings["http_timeout"],
-                                         logger=self.logger)
+    def _parse_book_basic_info(self, html: str) -> Tuple | None:
+        soup = BeautifulSoup(html, 'lxml')
 
-        if result and result.status_code == 200:
-            self.logger.info(f'Succeed to get the novel of book_id: {self.spider_settings["book_id"]}')
-            soup = BeautifulSoup(result.text, 'lxml')
+        try:
+            book_title = soup.find('h1', {'class': 'book-name'}).text
+            author = soup.find('div', {'class': 'au-name'}).text.strip()
+            book_summary = soup.find('div', {'class': 'book-dec'}).find('p').text
+            # see issue #10, strip invalid suffix characters after ? from cover url
+            book_cover_url = soup.find('div', {'class': 'book-img'}).find('img')['src'].split("?")[0]
 
-            try:
-                book_title = soup.find('h1', {'class': 'book-name'}).text
-                author = soup.find('div', {'class': 'au-name'}).text.strip()
-                book_summary = soup.find('div', {'class': 'book-dec'}).find('p').text
-                # see issue #10, strip invalid suffix characters after ? from cover url
-                book_cover_url = soup.find('div', {'class': 'book-img'}).find('img')['src'].split("?")[0]
-
-                self.logger.info(f'book name:《{book_title}》')
-                return book_title, author, book_summary, book_cover_url
-            except (Exception,):
-                self.logger.error(f'Failed to parse basic info of book_id: {self.spider_settings["book_id"]}')
+            self.logger.info(f'book name:《{book_title}》')
+            return book_title, author, book_summary, book_cover_url
+        except (Exception,):
+            self.logger.error(f'Failed to parse basic info of book_id: {self.spider_settings["book_id"]}')
 
         return None
 
@@ -1172,8 +1165,15 @@ class LinovelibSpiderPC(BaseLinovelibSpider):
 
         xor_result = require_lang ^ current_lang
         if xor_result:
-            result = translate_btn.click()
-            # do better: wait util see expected language text flag before leaving.
+            translate_btn.click()
             self.logger.info(f'[LANGUAGE]Execute conversion: {current_lang_repr} => {require_lang_repr}.')
+            # GB_BIG5.js converts the DOM in place and then flips the button label; wait for the
+            # flip so that callers can read the converted page right away.
+            deadline = time.time() + 10
+            while ('简体' in page.ele('#GB_BIG').text) != require_lang:
+                if time.time() > deadline:
+                    self.logger.warning('[LANGUAGE]Conversion flag not seen within 10s; page text may be unconverted.')
+                    break
+                sleep(0.2)
         else:
             self.logger.info(f'[LANGUAGE]No conversion is required: {current_lang_repr} => {require_lang_repr}.')
