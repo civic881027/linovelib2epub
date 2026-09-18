@@ -61,6 +61,7 @@ dynamic = ["version"]
 
 [project.scripts]
 linovelib2epub = "linovelib2epub.cli:main"
+linovelib2epub-gui = "linovelib2epub.gui:main"
 
 [project.urls]
 Homepage = "https://github.com/wdpm/linovelib2epub"

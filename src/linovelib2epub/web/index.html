@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>輕小說轉 EPUB</title>
+<style>
+  :root {
+    --line: #d8d8de;
+    --ink: #1b1b1f;
+    --muted: #6b6b76;
+    --accent: #2f5bd7;
+    --panel: #ffffff;
+    --page: #f5f5f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --line: #3a3a42;
+      --ink: #e9e9ee;
+      --muted: #9a9aa6;
+      --accent: #7aa0ff;
+      --panel: #212128;
+      --page: #16161a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px; background: var(--page); color: var(--ink);
+    font-family: "Noto Sans TC", "Microsoft JhengHei", "PingFang TC", "Heiti TC", sans-serif;
+    font-size: 15px; line-height: 1.6;
+  }
+  main { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; margin-bottom: 16px; }
+  .grid { display: grid; grid-template-columns: 130px 1fr; gap: 12px 14px; align-items: center; }
+  label { color: var(--muted); }
+  input[type=text], input[type=number], select {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--page); color: var(--ink); font: inherit;
+  }
+  .row { display: flex; gap: 8px; }
+  .hint { color: var(--muted); font-size: 13px; }
+  .checks { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 16px; }
+  .checks label { color: var(--ink); display: flex; align-items: center; gap: 6px; }
+  button {
+    font: inherit; padding: 9px 18px; border-radius: 6px; border: 1px solid var(--accent);
+    background: var(--accent); color: #fff; cursor: pointer;
+  }
+  button.secondary { background: transparent; color: var(--accent); }
+  button:disabled { opacity: .55; cursor: default; }
+  #start { width: 100%; margin-top: 18px; padding: 11px; }
+  #log {
+    height: 320px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+    background: var(--page); border: 1px solid var(--line); border-radius: 6px; padding: 12px;
+    font-size: 13px; font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+  #volumes { display: none; }
+  #volumeList { max-height: 300px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
+  #volumeList label { display: flex; gap: 8px; align-items: flex-start; padding: 3px 0; color: var(--ink); }
+  .notice { padding: 10px 12px; border-radius: 6px; border: 1px solid var(--line); margin-bottom: 12px; }
+  .notice.bad { border-color: #d05050; }
+  .notice.good { border-color: #3f9d55; }
+</style>
+</head>
+<body>
+<main>
+  <h1>輕小說轉 EPUB</h1>
+
+  <div class="panel" id="form">
+    <div class="grid">
+      <label for="bookId">書籍編號</label>
+      <div>
+        <input type="text" id="bookId" inputmode="numeric" placeholder="例如 2978">
+        <div class="hint">網址 novel/2978.html 中間的數字</div>
+      </div>
+
+      <label for="site">小說網站</label>
+      <select id="site"></select>
+
+      <label for="chapterDelay">章節間隔</label>
+      <div class="row">
+        <input type="number" id="chapterDelay" min="0" max="120" style="width:110px">
+        <span class="hint" style="align-self:center">秒</span>
+      </div>
+
+      <label for="pageDelay">分頁間隔</label>
+      <div class="row">
+        <input type="number" id="pageDelay" min="0" max="120" style="width:110px">
+        <span class="hint" style="align-self:center">秒，間隔太短容易被網站限流</span>
+      </div>
+
+      <label for="outputDir">輸出資料夾</label>
+      <input type="text" id="outputDir">
+
+      <label for="browserPath">瀏覽器路徑</label>
+      <div>
+        <input type="text" id="browserPath" placeholder="留空自動尋找已安裝的瀏覽器">
+      </div>
+
+      <label for="logLevel">記錄詳細程度</label>
+      <select id="logLevel" style="width:200px"></select>
+    </div>
+
+    <div class="checks">
+      <label><input type="checkbox" id="divideVolume" checked>每卷各存一個檔案</label>
+      <label><input type="checkbox" id="selectVolumeMode">自選卷數</label>
+      <label><input type="checkbox" id="hasIllustration" checked>下載插圖</label>
+      <label><input type="checkbox" id="headless" checked>隱藏瀏覽器視窗</label>
+    </div>
+
+    <button id="start">開始下載</button>
+  </div>
+
+  <div class="panel" id="volumes">
+    <h1 style="font-size:16px">選擇要下載的卷</h1>
+    <div id="volumeList"></div>
+    <div class="row" style="margin-top:12px">
+      <button id="volumeOk">確定</button>
+      <button id="volumeCancel" class="secondary">取消</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h1 style="font-size:16px">執行紀錄</h1>
+    <div id="message"></div>
+    <div id="log"></div>
+  </div>
+</main>
+
+<script>
+const CONFIG = __CONFIG__;
+const TOKEN = new URLSearchParams(location.search).get('token') || '';
+const $ = (id) => document.getElementById(id);
+let cursor = 0;
+let volumesShown = false;
+
+function fill(select, values, chosen) {
+  select.innerHTML = '';
+  for (const value of values) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = value;
+    if (value === chosen) option.selected = true;
+    select.appendChild(option);
+  }
+}
+
+fill($('site'), CONFIG.sites, CONFIG.defaultSite);
+fill($('logLevel'), CONFIG.logLevels, CONFIG.defaultLogLevel);
+$('chapterDelay').value = CONFIG.defaultDelay;
+$('pageDelay').value = CONFIG.defaultDelay;
+$('outputDir').value = CONFIG.outputDir;
+
+function api(path, options) {
+  options = options || {};
+  options.headers = Object.assign({'X-Token': TOKEN, 'Content-Type': 'application/json'}, options.headers || {});
+  return fetch(path, options);
+}
+
+function readForm() {
+  return {
+    book_id: $('bookId').value.trim(),
+    site_label: $('site').value,
+    chapter_delay: parseInt($('chapterDelay').value, 10),
+    page_delay: parseInt($('pageDelay').value, 10),
+    output_dir: $('outputDir').value.trim(),
+    browser_path: $('browserPath').value.trim(),
+    log_level_label: $('logLevel').value,
+    divide_volume: $('divideVolume').checked,
+    select_volume_mode: $('selectVolumeMode').checked,
+    has_illustration: $('hasIllustration').checked,
+    headless: $('headless').checked
+  };
+}
+
+function showMessage(text, kind) {
+  const box = $('message');
+  if (!text) { box.innerHTML = ''; return; }
+  box.innerHTML = '';
+  const div = document.createElement('div');
+  div.className = 'notice ' + (kind || '');
+  div.textContent = text;
+  box.appendChild(div);
+}
+
+$('start').addEventListener('click', async () => {
+  showMessage('');
+  $('start').disabled = true;
+  try {
+    const response = await api('/api/start', {method: 'POST', body: JSON.stringify(readForm())});
+    const data = await response.json();
+    if (!data.ok) {
+      showMessage(data.error, 'bad');
+      $('start').disabled = false;
+    }
+  } catch (error) {
+    showMessage('無法連線到本機程式：' + error, 'bad');
+    $('start').disabled = false;
+  }
+});
+
+$('volumeOk').addEventListener('click', () => sendVolumes(
+  [...document.querySelectorAll('#volumeList input:checked')].map((box) => Number(box.value))));
+$('volumeCancel').addEventListener('click', () => sendVolumes([]));
+
+async function sendVolumes(selected) {
+  $('volumes').style.display = 'none';
+  volumesShown = false;
+  await api('/api/volumes', {method: 'POST', body: JSON.stringify({selected})});
+}
+
+function showVolumes(titles) {
+  const list = $('volumeList');
+  list.innerHTML = '';
+  titles.forEach((title, index) => {
+    const label = document.createElement('label');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.value = String(index);
+    label.appendChild(box);
+    label.appendChild(document.createTextNode(title));
+    list.appendChild(label);
+  });
+  $('volumes').style.display = 'block';
+  volumesShown = true;
+  $('volumes').scrollIntoView({behavior: 'smooth'});
+}
+
+async function poll() {
+  try {
+    const response = await api('/api/state?cursor=' + cursor);
+    const state = await response.json();
+    cursor = state.cursor;
+    if (state.lines.length) {
+      const log = $('log');
+      const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+      log.textContent += state.lines.join('\n') + '\n';
+      if (atBottom) log.scrollTop = log.scrollHeight;
+    }
+    if (state.volumes && !volumesShown) showVolumes(state.volumes);
+    if (!state.volumes && volumesShown) { $('volumes').style.display = 'none'; volumesShown = false; }
+    $('start').disabled = state.running;
+    if (!state.running && state.result !== null) {
+      if (state.result === '') showMessage('完成，EPUB 已輸出到 ' + state.outputDir, 'good');
+      else showMessage('失敗：' + state.result, 'bad');
+    }
+  } catch (error) {
+    /* the local server is briefly unavailable; the next tick retries */
+  }
+}
+
+setInterval(poll, 1000);
+poll();
+</script>
+</body>
+</html>
