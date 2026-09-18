@@ -26,8 +26,34 @@ jobs:
       - name: Smoke test
         shell: bash
         run: ./dist/linovelib2epub --help
+      - name: Package (Linux, tar keeps the executable bit)
+        if: runner.os == 'Linux'
+        run: tar -czf ${{ matrix.artifact }}.tar.gz -C dist linovelib2epub
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: mv dist/linovelib2epub.exe ${{ matrix.artifact }}.exe
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
-          path: dist/linovelib2epub*
+          path: |
+            ${{ matrix.artifact }}.tar.gz
+            ${{ matrix.artifact }}.exe
           if-no-files-found: error
+
+  # Pushing a tag like v0.1.4 publishes a GitHub Release with both executables attached.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create GitHub Release
+        run: gh release create "$GITHUB_REF_NAME" artifacts/* --repo "$GITHUB_REPOSITORY" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
