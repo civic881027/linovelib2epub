@@ -2,18 +2,20 @@
 # PyInstaller spec. Build a single-file executable with:
 #   uv run --with pyinstaller pyinstaller linovelib2epub.spec
 # The result lands in dist/linovelib2epub (dist/linovelib2epub.exe on Windows).
+# Running it with no arguments opens the web interface; arguments run the command line.
 # A Chromium-based browser (and tesseract, for the PC sites) must still be
 # installed on the machine that runs the executable.
 from PyInstaller.utils.hooks import collect_data_files, copy_metadata
 
-datas = [('src/linovelib2epub/styles', 'linovelib2epub/styles')]
+datas = [('src/linovelib2epub/styles', 'linovelib2epub/styles'),
+         ('src/linovelib2epub/web', 'linovelib2epub/web')]
 datas += collect_data_files('fake_useragent')
 datas += collect_data_files('DrissionPage')
 # readchar reads its own version via importlib.metadata at import time.
 datas += copy_metadata('readchar')
 
 a = Analysis(
-    ['src/linovelib2epub/cli.py'],
+    ['src/linovelib2epub/app.py'],
     pathex=['src'],
     datas=datas,
 )

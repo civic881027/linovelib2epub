@@ -354,6 +354,10 @@ def main(argv: list | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
     if '--check' in argv:  # bundle smoke test, no browser and no server
         print('\n'.join(SITE_CHOICES))
+        # A packaged build must carry these; reading them here fails loudly if the spec drops one.
+        for folder, name in (('web', 'index.html'), ('styles', 'chapter.css'),
+                             ('styles', 'cover.css'), ('styles', 'nav.css')):
+            print(f'resource ok: {folder}/{name} ({len(read_pkg_resource(folder, name))} bytes)')
         return
     port = 0
     if '--port' in argv:

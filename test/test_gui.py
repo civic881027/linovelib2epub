@@ -146,3 +146,22 @@ def test_close_browser_survives_a_driver_that_refuses_to_quit():
     state.crawler = Mock(_spider=Mock(_driver=Mock(quit=Mock(side_effect=OSError('browser gone')))))
 
     assert close_browser(state) is False
+
+
+def test_double_click_with_no_arguments_opens_the_web_interface():
+    from linovelib2epub.app import route
+
+    assert route([]) == ('gui', [])
+
+
+def test_gui_subcommand_passes_its_own_flags_through():
+    from linovelib2epub.app import route
+
+    assert route(['gui', '--port', '8000']) == ('gui', ['--port', '8000'])
+
+
+def test_any_other_argument_goes_to_the_command_line():
+    from linovelib2epub.app import route
+
+    assert route(['2978', '--site', 'linovelib_pc']) == ('cli', ['2978', '--site', 'linovelib_pc'])
+    assert route(['--help']) == ('cli', ['--help'])

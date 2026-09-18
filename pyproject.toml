@@ -60,8 +60,10 @@ dependencies = [
 dynamic = ["version"]
 
 [project.scripts]
-linovelib2epub = "linovelib2epub.cli:main"
+# No arguments opens the web interface; anything else is a command line.
+linovelib2epub = "linovelib2epub.app:main"
 linovelib2epub-gui = "linovelib2epub.gui:main"
+linovelib2epub-cli = "linovelib2epub.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/wdpm/linovelib2epub"

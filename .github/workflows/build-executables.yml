@@ -21,11 +21,16 @@ jobs:
       - uses: astral-sh/setup-uv@v10.1.0
       - name: Install project
         run: uv sync --python 3.10
+      - name: Run tests
+        run: uv run --with pytest pytest -q test/
       - name: Build single-file executable
         run: uv run --with pyinstaller pyinstaller --noconfirm linovelib2epub.spec
-      - name: Smoke test
+      - name: Smoke test the command line
         shell: bash
         run: ./dist/linovelib2epub --help
+      - name: Smoke test the packaged web interface and its data files
+        shell: bash
+        run: ./dist/linovelib2epub gui --check
       - name: Package (Linux, tar keeps the executable bit)
         if: runner.os == 'Linux'
         run: tar -czf ${{ matrix.artifact }}.tar.gz -C dist linovelib2epub
@@ -53,7 +58,20 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      - name: Write the usage note
+        run: |
+          cat > notes.md <<'NOTE'
+          ## 使用方式
+
+          1. 下載對應作業系統的檔案。Windows 下載 `.exe`，Linux 下載 `.tar.gz` 後解開。
+          2. 直接點兩下執行，瀏覽器會自動開啟操作介面。
+          3. 填入書籍編號後按「開始下載」。關閉分頁或按「停止並結束程式」即可結束。
+
+          需要先安裝 Chrome 或 Edge 等 Chromium 系瀏覽器，程式用它來讀取網站。
+
+          進階用法：在終端機帶參數執行即為命令列模式，`--help` 可看全部選項。
+          NOTE
       - name: Create GitHub Release
-        run: gh release create "$GITHUB_REF_NAME" artifacts/* --repo "$GITHUB_REPOSITORY" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" artifacts/* --repo "$GITHUB_REPOSITORY" --notes-file notes.md --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}

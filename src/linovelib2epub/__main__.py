@@ -1,3 +1,3 @@
-from linovelib2epub.cli import main
+from linovelib2epub.app import main
 
 main()
