@@ -59,6 +59,9 @@ dependencies = [
 ]
 dynamic = ["version"]
 
+[project.scripts]
+linovelib2epub = "linovelib2epub.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/wdpm/linovelib2epub"
 Source = "https://github.com/wdpm/linovelib2epub"
