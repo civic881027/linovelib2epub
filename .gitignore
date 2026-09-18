@@ -42,3 +42,6 @@ pickle
 # demo py
 *demo.py
 **/.mypy_cache/
+
+# pyinstaller
+/build/
