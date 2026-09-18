@@ -56,14 +56,17 @@ Crawl light novel from some websites and convert it to epub.
 
 | 序號 | 網站名稱                                         | 語言    | 爬蟲難度 | 支援進度                                         | 備註                           | 技術難點                                                     |
 |----|----------------------------------------------|-------|------|----------------------------------------------|------------------------------|----------------------------------------------------------|
-| 1  | [嗶哩輕小說（Mobile）](https://w.linovelib.com/)    | 簡 / 繁 | 中😰  | <img src="./merrli.png" width="36">          | ` 不用登入 ` ` 一章多頁 `            | `JS 文字混淆 ` `JS 檔案隨機 ` ` 章節連結破損 ` `Cloudflare 保護 ` ` 限流 ` |
-| 2  | ~~[嗶哩輕小說（Web）](https://www.linovelib.com/)~~ | 簡 / 繁 | 中😰  | <img src="./tearlaments-ban.png" width="36"> | 資源同 Mobile，沒必要。              | N/A                                                      |
+| 1  | [嗶哩輕小說（Mobile）](https://www.bilinovel.com/) | 簡 / 繁 | 中😰  | <img src="./merrli.png" width="36">          | ` 不用登入 ` ` 一章多頁 `            | `JS 文字混淆 ` `JS 檔案隨機 ` ` 章節連結破損 ` `Cloudflare 保護 ` ` 限流 ` |
+| 2  | [嗶哩輕小說（Web）](https://www.linovelib.com/)   | 簡 / 繁 | 中😰  | <img src="./merrli.png" width="36">          | ` 不用登入 ` ` 一章多頁 ` ` 網頁介面預設 ` | ` 字型混淆 ` ` 簡繁切換由前端 JS 完成 ` ` 瀏覽器語言為 zh-TW 時會被導向手機版 ` ` 限流 ` |
 | 3  | ~~[輕之國度](https://www.lightnovel.us/)~~       | 簡 / 繁 | 高🤣  | <img src="./tearlaments-ban.png" width="36"> | ` 需要登入 `                     | ` 輕幣門檻 ` ` 導航混亂 `                                        |
 | 4  | ~~[無限輕小說](https://www.8novel.com/)~~         | 繁     | 中😰  | <img src="./tearlaments-ban.png" width="36"> | ` 不用登入 ` ` 一章多頁 `            | N/A                                                      |
 | 5  | [輕小說文庫](https://www.wenku8.net/)             | 簡 / 繁 | 低😆  | <img src="./merrli.png" width="36">          | ` 不用登入 ` ` 一章一頁 `            | 無                                                        |
 | 6  | ~~[輕小說百科](https://lnovel.org/)~~             | 簡 / 繁 | 低😆  | <img src="./tearlaments-ban.png" width="36"> | ` 不用登入 ` ` 一章一頁 ` ` 插圖清晰度低 ` | N/A                                                      |
 | 7  | [真白萌](https://masiro.me/admin/novels)        | 簡 / 繁 | 中😰  | <img src="./merrli.png" width="36">          | ` 一章一頁 `                     | ` 需要登入 ` ` 積分購買 ` ` 等級限制 ` `CF turnstile` ` 限流 `         |
 | 8  | [百合會新站](https://www.yamibo.com/site/novel)   | 簡 / 繁 | 中😰  | 擱置                                           | ` 可選 [登入]` ` 一章一頁 `          | ` 付費章節需要登入 ` ` coin 購買 `                                 |
+
+> 本分支的實測範圍：只有 **嗶哩輕小說（Web）** 經過完整實測，涵蓋繁體轉換、分卷輸出、圖片下載與網頁介面。
+> 其餘網站沿用上游標示的支援狀態，本分支未加驗證。手機版在部分企業網路會被憑證攔截而連不上，屆時請改用 Web 版。
 
 爬蟲友好度有兩個重要指標：
 
@@ -186,7 +189,7 @@ Rollback python version to 3.10.X can work. The exact root cause is unknown now.
 
 ### Linovelib
 
-> target site: https://w.linovelib.com
+> target site: https://www.linovelib.com （Web）、https://www.bilinovel.com （Mobile）
 
 > 2024-3-19 Update: Now linovelib also has a cloudflare access protection and requests rate limit.
 > In order to decrease the probability of being banned by Linovelib, it is highly recommended to set the delay
