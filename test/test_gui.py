@@ -86,15 +86,48 @@ def test_zero_delay_is_allowed():
 
 
 def test_ensure_std_streams_replaces_missing_streams(monkeypatch):
-    from linovelib2epub import gui
+    from linovelib2epub import app
 
-    monkeypatch.setattr(gui.sys, 'stdout', None)
-    monkeypatch.setattr(gui.sys, 'stderr', None)
+    monkeypatch.setattr(app.sys, 'stdout', None)
+    monkeypatch.setattr(app.sys, 'stderr', None)
 
-    gui.ensure_std_streams()
+    app.ensure_std_streams()
 
-    assert gui.sys.stdout is not None and gui.sys.stderr is not None
-    gui.sys.stdout.write('windowed builds must not crash on this')
+    assert app.sys.stdout is not None and app.sys.stderr is not None
+    app.sys.stdout.write('windowed builds must not crash on this')
+
+
+def test_ensure_std_streams_switches_the_console_to_utf8(monkeypatch):
+    """Redirected output on Windows defaults to the ANSI code page, which cannot encode Chinese."""
+    from unittest.mock import Mock
+
+    from linovelib2epub import app
+
+    stdout, stderr = Mock(), Mock()
+    monkeypatch.setattr(app.sys, 'stdout', stdout)
+    monkeypatch.setattr(app.sys, 'stderr', stderr)
+
+    app.ensure_std_streams()
+
+    stdout.reconfigure.assert_called_once_with(encoding='utf-8', errors='replace')
+    stderr.reconfigure.assert_called_once_with(encoding='utf-8', errors='replace')
+
+
+def test_ensure_std_streams_tolerates_a_stream_that_cannot_be_reconfigured(monkeypatch):
+    import io
+
+    from linovelib2epub import app
+
+    class Stubborn(io.StringIO):
+        def reconfigure(self, **kwargs):
+            raise OSError('not a real console')
+
+    monkeypatch.setattr(app.sys, 'stdout', Stubborn())
+    monkeypatch.setattr(app.sys, 'stderr', Stubborn())
+
+    app.ensure_std_streams()  # must not raise
+
+    app.sys.stdout.write('嗶哩輕小說')
 
 
 def test_page_is_gone_only_after_the_page_has_polled_once():

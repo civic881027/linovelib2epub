@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from linovelib2epub import Linovelib2Epub, TargetSite
+from linovelib2epub.app import ensure_std_streams
 from linovelib2epub import logger as logger_module
 from linovelib2epub.spider.linovelib_spider import BaseLinovelibSpider
 from linovelib2epub.utils import read_pkg_resource
@@ -30,14 +31,6 @@ DEFAULT_SITE_LABEL = '嗶哩輕小說（電腦版・繁體）'
 LOG_LEVEL_CHOICES = {'一般': 'INFO', '詳細（除錯用）': 'DEBUG'}
 DEFAULT_LOG_LEVEL_LABEL = '一般'
 DEFAULT_DELAY = 5
-
-
-def ensure_std_streams() -> None:
-    """A windowed build has no console, so sys.stdout/stderr are None and the library's rich log
-    handler would fail on the first message."""
-    for name in ('stdout', 'stderr'):
-        if getattr(sys, name, None) is None:
-            setattr(sys, name, open(os.devnull, 'w', encoding='utf-8'))
 
 
 def build_kwargs(form: dict) -> dict:
