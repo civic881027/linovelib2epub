@@ -53,7 +53,7 @@ class EpubWriter:
                 # if volume image folder is not empty, then use the first image as the cover
                 if volume.volume_cover:
                     cover_file = f'{self.epub_settings["image_download_folder"]}/{volume.volume_cover.local_relative_path}'
-                self._write_epub(f'{book_title}_{volume.title}', author, volume, cover_file)
+                self._write_epub(volume.title, author, volume, cover_file)
 
         # tips: show output file folder
         output_folder = os.path.join(os.getcwd(), self._get_output_folder())

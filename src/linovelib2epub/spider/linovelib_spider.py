@@ -644,9 +644,10 @@ class LinovelibSpiderMobile(BaseLinovelibSpider):
             new_novel = LightNovel()
             url_next = ''
 
-            volume_id = -1
             for catalog_volume in catalog_list:
-                volume_id += 1
+                # catalog position (1-based, assigned before volume selection), so the "NN." epub
+                # prefix stays the same no matter which volumes the user picks
+                volume_id = catalog_volume.vid
 
                 new_volume = LightNovelVolume(volume_id=volume_id)
                 new_volume.title = catalog_volume.volume_title
@@ -962,9 +963,10 @@ class LinovelibSpiderPC(BaseLinovelibSpider):
             new_novel = LightNovel()
             url_next = ''
 
-            volume_id = -1
             for catalog_volume in catalog_list:
-                volume_id += 1
+                # catalog position (1-based, assigned before volume selection), so the "NN." epub
+                # prefix stays the same no matter which volumes the user picks
+                volume_id = catalog_volume.vid
 
                 new_volume = LightNovelVolume(volume_id=volume_id)
                 new_volume.title = catalog_volume.volume_title
