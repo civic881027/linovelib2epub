@@ -381,6 +381,14 @@ class BaseLinovelibSpider(BaseNovelWebsiteSpider):
         ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0'
         co.set_argument(f"--user-agent={ua}")
 
+        # Browser language.
+        # www.linovelib.com (PC theme) redirects browsers whose navigator.language is zh-TW/zh-HK to
+        # tw.linovelib.com, which serves the mobile theme and has no #GB_BIG toggle. Force zh-CN so the
+        # PC spider stays on the PC theme. The mobile spider keeps the OS locale (see README).
+        # Only --accept-lang changes navigator.language in headless mode; --lang does not.
+        if not self.spider_settings['mobile']:
+            co.set_argument('--accept-lang=zh-CN')
+
         # SSL related
         # co.set_argument('--ignore-certificate-errors-spki-list')
 
