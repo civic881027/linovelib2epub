@@ -405,3 +405,34 @@ def test_a_volume_already_in_the_index_is_not_walked_again(tmp_path, monkeypatch
 
     assert walked == []                       # the saved links were used as they stand
     assert fetched == ['http://x/known.html']  # and they are the ones fetched
+
+
+def test_every_finished_volume_is_handed_over_as_it_arrives(tmp_path, monkeypatch):
+    spider, _ = a_two_volume_crawl(tmp_path, monkeypatch)
+    handed = []
+    spider.spider_settings['on_volume_ready'] = handed.append
+    spider._novel_basic_info = ('書名', '作者', '簡介', 'cover')
+
+    spider._crawl_book_content('http://example.invalid/catalog')
+
+    # one hand-off per volume, each carrying just that volume, as the crawl goes
+    assert [novel.volumes[0].volume_id for novel in handed] == [1, 2]
+    assert all(len(novel.volumes) == 1 for novel in handed)
+    assert all(novel.book_title == '書名' for novel in handed)
+
+
+def test_a_skipped_volume_is_not_handed_over_again(tmp_path, monkeypatch):
+    spider, catalog = a_two_volume_crawl(tmp_path, monkeypatch)
+    store = spider._resume_store()
+    saved = LightNovel()
+    saved.add_volume(vid=1, title='v1')
+    store.save_partial(saved)
+    store.save_index(catalog, {1: 'http://x/boundary.html'})
+    handed = []
+    spider.spider_settings['on_volume_ready'] = handed.append
+    spider._novel_basic_info = ('書名', '作者', '簡介', 'cover')
+
+    spider._crawl_book_content('http://example.invalid/catalog')
+
+    # volume 1 already has its epub from the earlier run
+    assert [novel.volumes[0].volume_id for novel in handed] == [2]

@@ -923,6 +923,12 @@ class LinovelibSpiderPC(BaseLinovelibSpider):
         book_title, author, book_summary, book_cover = book_basic_info
         # print(book_title, author, book_summary, book_cover)
 
+        # keep it before the crawl starts: each finished volume is handed over as it arrives
+        self._novel_basic_info = (book_title, author, book_summary,
+                                  LightNovelImage(related_page_url=book_url, remote_src=book_cover,
+                                                  book_id=self.spider_settings["book_id"],
+                                                  is_book_cover=True))
+
         new_novel_with_content = self._crawl_book_content(book_catalog_url)
         if not new_novel_with_content:
             raise LinovelibException(f'Fetch book_content of {self.spider_settings["book_id"]} failed.')
@@ -1145,6 +1151,7 @@ class LinovelibSpiderPC(BaseLinovelibSpider):
                     index[volume_id] = url_next
                     store.save_index(catalog_list, index)
                 store.save_partial(new_novel)
+                self._emit_volume(new_novel.volumes[-1])
 
             # restored volumes come first, so put everything back into catalog order
             new_novel.volumes.sort(key=lambda volume: int(volume.volume_id))

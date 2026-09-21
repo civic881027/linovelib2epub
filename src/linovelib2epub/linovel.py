@@ -38,7 +38,7 @@ class EpubWriter:
     def dump_settings(self) -> None:
         self.logger.info(self.epub_settings)
 
-    def write(self, novel: LightNovel) -> None:
+    def write(self, novel: LightNovel, already_written=frozenset()) -> None:
         start = time.perf_counter()
         self.logger.info(f'[Config]: has_illustration: {self.epub_settings["has_illustration"]};'
                          f' divide_volume: {self.epub_settings["divide_volume"]}')
@@ -51,6 +51,8 @@ class EpubWriter:
             self._write_epub(book_title, author, novel.volumes, cover_file)
         else:
             for volume in novel.volumes:
+                if volume.volume_id in already_written:
+                    continue  # its epub was written as soon as the volume finished
                 # if volume image folder is not empty, then use the first image as the cover
                 if volume.volume_cover:
                     cover_file = f'{self.epub_settings["image_download_folder"]}/{volume.volume_cover.local_relative_path}'
@@ -422,6 +424,8 @@ class Linovelib2Epub:
             'resume': resume
         }
 
+        self._written_volume_ids: set = set()
+
         self.spider_settings = {
             **self.common_settings,
             'image_download_strategy': image_download_strategy,
@@ -434,7 +438,8 @@ class Linovelib2Epub:
             'chapter_crawl_delay': chapter_crawl_delay,
             'page_crawl_delay': page_crawl_delay,
             'headless': headless,
-            'crawling_contentid': crawling_contentid
+            'crawling_contentid': crawling_contentid,
+            'on_volume_ready': self._write_finished_volume
         }
 
         if image_download_max_epochs is not None:
@@ -468,6 +473,15 @@ class Linovelib2Epub:
         """Release the browser. Callers should do this when they are done, successful or not."""
         self._spider.close()
 
+    def _write_finished_volume(self, one_volume_novel: LightNovel) -> None:
+        """Download this volume's images and write its epub straight away, so a long book
+        produces readable files as it goes instead of only once everything is done."""
+        if not self.common_settings['divide_volume']:
+            return
+        self._spider.download_images(one_volume_novel)
+        self._epub_writer.write(one_volume_novel)
+        self._written_volume_ids.add(one_volume_novel.volumes[0].volume_id)
+
     def run(self) -> None:
         # recover from last work. only support this format: [hostname]_3573.pickle
         # 1.solve novel pickle
@@ -490,7 +504,7 @@ class Linovelib2Epub:
             self._spider.post_fetch(novel)
 
             # 3.write epub
-            self._epub_writer.write(novel)
+            self._epub_writer.write(novel, already_written=self._written_volume_ids)
 
             # 4.cleanup
             self.logger.info('Write epub finished. Now delete all the artifacts if set.')

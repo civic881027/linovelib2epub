@@ -49,6 +49,9 @@ class BaseNovelWebsiteSpider(ABC):
 
     def __init__(self, spider_settings: Dict[str, Any]) -> None:
         self.spider_settings = spider_settings
+        # set once the book page has been read, so a finished volume can be handed over with
+        # the title, author and cover it needs to become an epub on its own
+        self._novel_basic_info = None
         self.logger = Logger(logger_name=type(self).__name__,
                              logger_level=self.spider_settings["log_level"],
                              log_filename=self.spider_settings["log_filename"]).get_logger()
@@ -217,6 +220,27 @@ class BaseNovelWebsiteSpider(ABC):
             else:
                 # maybe 404 etc. Now ignore it, don't raise error to avoid retry dead loop
                 pass
+
+    def download_images(self, novel: LightNovel) -> None:
+        """Fetch the images of whatever volumes this novel carries."""
+        self._process_image_download(novel)
+
+    def _emit_volume(self, volume) -> None:
+        """Hand a finished volume over, so its epub can be written now instead of after the
+        whole book. A failure here must not end the crawl: the final write covers it."""
+        handler = self.spider_settings.get('on_volume_ready')
+        if handler is None or self._novel_basic_info is None:
+            return
+        book_title, author, description, book_cover = self._novel_basic_info
+        one_volume = LightNovel(book_id=self.spider_settings['book_id'], book_title=book_title,
+                                author=author, description=description, book_cover=book_cover)
+        one_volume.volumes = [volume]
+        one_volume.mark_basic_info_ready()
+        one_volume.mark_volumes_content_ready()
+        try:
+            handler(one_volume)
+        except Exception as error:
+            self.logger.error(f'Could not write the epub of volume {volume.volume_id} yet: {error}')
 
     def post_fetch(self, novel: LightNovel) -> None:
         self._save_novel_pickle(novel)
