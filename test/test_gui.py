@@ -51,6 +51,7 @@ def test_build_kwargs_maps_the_form_to_library_arguments():
         'select_volume_mode': False,
         'has_illustration': True,
         'headless': True,
+        'resume': True,
         'log_level': 'INFO',
     }
 
@@ -152,17 +153,16 @@ def test_page_is_not_gone_while_it_keeps_polling():
     assert page_is_gone(page_seen=True, seconds_since_poll=12.0, grace=12.0) is False
 
 
-def test_close_browser_quits_the_crawlers_driver():
+def test_close_browser_releases_the_crawlers_browser():
     from unittest.mock import Mock
 
     from linovelib2epub.gui import AppState, close_browser
 
-    driver = Mock()
     state = AppState()
-    state.crawler = Mock(_spider=Mock(_driver=driver))
+    state.crawler = Mock(_spider=Mock(_driver=Mock()))
 
     assert close_browser(state) is True
-    driver.quit.assert_called_once_with()
+    state.crawler.close.assert_called_once_with()
 
 
 def test_close_browser_is_a_no_op_before_a_crawl_starts():
@@ -171,13 +171,13 @@ def test_close_browser_is_a_no_op_before_a_crawl_starts():
     assert close_browser(AppState()) is False
 
 
-def test_close_browser_survives_a_driver_that_refuses_to_quit():
+def test_close_browser_survives_a_browser_that_refuses_to_quit():
     from unittest.mock import Mock
 
     from linovelib2epub.gui import AppState, close_browser
 
     state = AppState()
-    state.crawler = Mock(_spider=Mock(_driver=Mock(quit=Mock(side_effect=OSError('browser gone')))))
+    state.crawler = Mock(_spider=Mock(_driver=Mock()), close=Mock(side_effect=OSError('browser gone')))
 
     assert close_browser(state) is False
 
@@ -270,9 +270,9 @@ def test_progress_resets_between_runs():
     assert state.progress() == {'done': 0, 'total': 0, 'etaSeconds': None}
 
 
-def test_resume_is_not_passed_to_the_library_as_an_argument():
-    # the library has no resume parameter; the choice answers its terminal prompt instead
-    assert 'resume' not in build_kwargs(a_form(resume=True))
+def test_resume_reaches_the_library():
+    assert build_kwargs(a_form(resume=True))['resume'] is True
+    assert build_kwargs(a_form(resume=False))['resume'] is False
 
 
 def test_validate_requires_an_explicit_resume_choice():

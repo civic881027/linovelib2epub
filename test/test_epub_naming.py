@@ -47,10 +47,12 @@ def test_single_epub_title_is_book_title(tmp_path, monkeypatch):
     assert writer._write_epub.call_args.args[0] == '書名'
 
 
-def test_selected_volume_keeps_catalog_position(monkeypatch):
+def test_selected_volume_keeps_catalog_position(tmp_path, monkeypatch):
     # Selecting only the third volume must still yield volume_id 3 (=> "03." prefix), not 0.
+    monkeypatch.chdir(tmp_path)  # checkpoints are written under the working directory
     spider = LinovelibSpiderPC.__new__(LinovelibSpiderPC)
-    spider.spider_settings = {'book_id': 1, 'http_retries': 0, 'select_volume_mode': True}
+    spider.spider_settings = {'book_id': 1, 'http_retries': 0, 'select_volume_mode': True,
+                              'pickle_temp_folder': 'pickle', 'log_filename': 'test', 'resume': False}
     spider.logger = logging.getLogger('test')
     catalog = [CatalogLinovelibVolume(vid=1, volume_title='v1'),
                CatalogLinovelibVolume(vid=2, volume_title='v2'),

@@ -19,6 +19,7 @@ from . import settings
 from .exceptions import LinovelibException
 from .logger import Logger
 from .models import LightNovel, LightNovelVolume, LightNovelImage
+from .resume import ResumeStore
 from .spider import ASYNCIO, LinovelibSpiderMobile, LinovelibSpiderPC  # type: ignore[attr-defined]
 from .spider.masiro_spider import MasiroSpider
 from .spider.wenku8_spider import Wenku8Spider
@@ -356,7 +357,8 @@ class Linovelib2Epub:
                  chapter_crawl_delay: int | None = None,
                  page_crawl_delay: int | None = None,
                  headless: bool = False,
-                 image_download_max_epochs: int | None = None
+                 image_download_max_epochs: int | None = None,
+                 resume: bool = True
                  ):
         # common mandatory parameters check
         if book_id is None:
@@ -416,7 +418,8 @@ class Linovelib2Epub:
             'log_filename': run_identifier,
             'log_level': log_level,
             'traditional': traditional,
-            'mobile': mobile
+            'mobile': mobile,
+            'resume': resume
         }
 
         self.spider_settings = {
@@ -461,6 +464,10 @@ class Linovelib2Epub:
                              logger_level=self.common_settings["log_level"],
                              log_filename=log_filename_str).get_logger()
 
+    def close(self) -> None:
+        """Release the browser. Callers should do this when they are done, successful or not."""
+        self._spider.close()
+
     def run(self) -> None:
         # recover from last work. only support this format: [hostname]_3573.pickle
         # 1.solve novel pickle
@@ -501,3 +508,6 @@ class Linovelib2Epub:
                 os.remove(novel_pickle_path)
             except (Exception,):
                 pass
+            # the chapter index and the per-volume checkpoint are only useful until the epub exists
+            ResumeStore(cast(str, self.common_settings['pickle_temp_folder']),
+                        cast(str, self.common_settings['log_filename'])).clear()

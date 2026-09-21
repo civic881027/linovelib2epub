@@ -27,6 +27,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help='run the browser headless')
     parser.add_argument('--browser-path', help='path to the Chromium-based browser binary')
     parser.add_argument('--log-level', help='DEBUG, INFO, WARNING or ERROR')
+    parser.add_argument('--resume', action=argparse.BooleanOptionalAction,
+                        help='continue from the volumes a previous run already fetched (default: yes)')
     return parser
 
 
@@ -40,7 +42,10 @@ def main(argv: list[str] | None = None) -> None:
         crawler = Linovelib2Epub(**kwargs)
     except ValueError as error:  # the library validates argument combinations
         parser.error(str(error))
-    crawler.run()
+    try:
+        crawler.run()
+    finally:
+        crawler.close()
 
 
 if __name__ == '__main__':

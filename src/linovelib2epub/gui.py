@@ -46,6 +46,7 @@ def build_kwargs(form: dict) -> dict:
         'select_volume_mode': form['select_volume_mode'],
         'has_illustration': form['has_illustration'],
         'headless': form['headless'],
+        'resume': form['resume'],
         'log_level': LOG_LEVEL_CHOICES[form['log_level_label']],
     }
     if form['browser_path']:
@@ -212,12 +213,12 @@ def page_is_gone(page_seen: bool, seconds_since_poll: float, grace: float = 12.0
 
 
 def close_browser(state: AppState) -> bool:
-    """The library never closes the Chrome it starts, so closing it is left to the caller."""
-    driver = getattr(getattr(state.crawler, '_spider', None), '_driver', None)
-    if driver is None:
+    """Release the browser the crawl started; it is a separate process."""
+    crawler = state.crawler
+    if crawler is None or getattr(getattr(crawler, '_spider', None), '_driver', None) is None:
         return False
     try:
-        driver.quit()
+        crawler.close()
     except Exception:
         return False
     return True
@@ -264,6 +265,7 @@ def run_crawl(state: AppState, form: dict) -> None:
         with state.lock:
             state.result = ''
     finally:
+        close_browser(state)  # the browser is a separate process and would otherwise be left behind
         with state.lock:
             state.running = False
             state.volume_titles = None

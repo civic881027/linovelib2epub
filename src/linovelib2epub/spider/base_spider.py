@@ -30,6 +30,23 @@ ASYNCIO = 'ASYNCIO'
 
 class BaseNovelWebsiteSpider(ABC):
 
+    def close(self) -> None:
+        """Shut down the browser this spider started.
+
+        It is a separate process, so without this it outlives the run and the next one fails to
+        connect to the debugging port.
+        """
+        driver = getattr(self, '_driver', None)
+        if driver is None:
+            return
+        try:
+            driver.quit()
+        except Exception:
+            pass
+        self._driver = None
+        if hasattr(self, '_is_driver_initialized'):
+            self._is_driver_initialized = False
+
     def __init__(self, spider_settings: Dict[str, Any]) -> None:
         self.spider_settings = spider_settings
         self.logger = Logger(logger_name=type(self).__name__,

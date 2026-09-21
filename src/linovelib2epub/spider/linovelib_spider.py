@@ -24,6 +24,7 @@ from ..exceptions import LinovelibException, PageContentAbnormalException, Empty
     EmptyArticleError
 from ..models import LightNovel, LightNovelChapter, LightNovelVolume, LightNovelImage, CatalogLinovelibChapter, \
     CatalogLinovelibVolume
+from ..resume import ResumeStore, apply_index
 from ..utils import (create_folder_if_not_exists, requests_get_with_retry)
 
 
@@ -468,6 +469,30 @@ class BaseLinovelibSpider(BaseNovelWebsiteSpider):
         answers = inquirer.prompt(questions)
         catalog_list = _reduce_catalog_by_selection(catalog_list, answers[question_name])
         return catalog_list
+
+    def _resume_store(self) -> ResumeStore:
+        return ResumeStore(self.spider_settings['pickle_temp_folder'],
+                           self.spider_settings['log_filename'])
+
+    def _resume_enabled(self) -> bool:
+        return bool(self.spider_settings.get('resume', True))
+
+    def _load_finished_volumes(self, catalog_list, store: ResumeStore, index: dict):
+        """The novel to keep filling, plus the ids of the volumes that can be skipped.
+
+        A volume is only skipped when the index also records where its link walk ended, because
+        the volume after it may need that to resolve a chapter whose catalog link is broken.
+        """
+        novel = store.load_partial() if self._resume_enabled() else None
+        if novel is None or not index:
+            return LightNovel(), set()
+        wanted = {volume.vid for volume in catalog_list}
+        # a previous run may have fetched volumes the user is not asking for this time
+        novel.volumes = [volume for volume in novel.volumes
+                         if volume.volume_id in wanted and volume.volume_id in index]
+        finished = {volume.volume_id for volume in novel.volumes}
+        self.logger.info(f'Resuming: {len(finished)} volume(s) already fetched.')
+        return novel, finished
 
     @staticmethod
     def _is_valid_chapter_link(href: str):
@@ -953,13 +978,20 @@ class LinovelibSpiderPC(BaseLinovelibSpider):
             if self.spider_settings['select_volume_mode']:
                 catalog_list = self._handle_select_volume(catalog_list)
 
-            new_novel = LightNovel()
+            store = self._resume_store()
+            index = apply_index(catalog_list, store.load_index()) if self._resume_enabled() else {}
+            new_novel, finished_volumes = self._load_finished_volumes(catalog_list, store, index)
             url_next = ''
 
             for catalog_volume in catalog_list:
                 # catalog position (1-based, assigned before volume selection), so the "NN." epub
                 # prefix stays the same no matter which volumes the user picks
                 volume_id = catalog_volume.vid
+                if volume_id in finished_volumes:
+                    # carry on from where this volume's link walk ended last time
+                    url_next = index[volume_id]
+                    self.logger.info(f'volume: {catalog_volume.volume_title} (already fetched, skipped)')
+                    continue
 
                 new_volume = LightNovelVolume(volume_id=volume_id)
                 new_volume.title = catalog_volume.volume_title
@@ -1067,7 +1099,13 @@ class LinovelibSpiderPC(BaseLinovelibSpider):
                                            illustrations=chapter.illustrations)
 
                 new_novel.add_volume(vid=new_volume.volume_id, title=new_volume.title, chapters=new_volume.chapters)
+                # the links of this volume are now known and its content is in hand: record both
+                index[volume_id] = url_next
+                store.save_index(catalog_list, index)
+                store.save_partial(new_novel)
 
+            # restored volumes come first, so put everything back into catalog order
+            new_novel.volumes.sort(key=lambda volume: int(volume.volume_id))
             return new_novel
 
         else:
