@@ -1,4 +1,5 @@
 import os
+import time
 
 import pytest
 
@@ -249,13 +250,29 @@ def test_state_reports_progress_from_the_chapter_log():
     state.set_total_chapters(10)
     for _ in range(4):
         state.note_chapter_started()
+    # pin the clock: on a coarse one the four calls above can read as no time at all
+    state.first_chapter_at = time.monotonic() - 30
 
     progress = state.progress()
 
     # the fourth chapter is still being fetched, so three are done
     assert progress['done'] == 3
     assert progress['total'] == 10
-    assert progress['etaSeconds'] > 0
+    assert progress['etaSeconds'] == pytest.approx(30 / 3 * 7, abs=1)
+
+
+def test_no_estimate_until_measurable_time_has_passed(monkeypatch):
+    from linovelib2epub import gui
+
+    # freeze the clock: Windows reads coarsely enough that two calls can show no elapsed time,
+    # and that must not turn into an estimate rather than "not yet known"
+    monkeypatch.setattr(gui.time, 'monotonic', lambda: 1000.0)
+    state = gui.AppState()
+    state.set_total_chapters(10)
+    state.note_chapter_started()
+    state.note_chapter_started()
+
+    assert state.progress()['etaSeconds'] is None
 
 
 def test_progress_resets_between_runs():
