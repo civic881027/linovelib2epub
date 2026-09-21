@@ -13,9 +13,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from linovelib2epub import Linovelib2Epub, TargetSite
+from linovelib2epub import linovel as linovel_module
 from linovelib2epub.app import ensure_std_streams
 from linovelib2epub import logger as logger_module
-from linovelib2epub.spider.linovelib_spider import BaseLinovelibSpider
+from linovelib2epub.spider.linovelib_spider import (BaseLinovelibSpider, LinovelibSpiderMobile,
+                                                    LinovelibSpiderPC)
 from linovelib2epub.utils import read_pkg_resource
 
 # Field label -> value. The first site is the default: linovelib, PC theme, Traditional Chinese.
@@ -68,6 +70,8 @@ def validate(form: dict) -> str | None:
             return f'{name}不能是負數。'
     if not os.path.isdir(form['output_dir']):
         return '輸出資料夾不存在。'
+    if not isinstance(form.get('resume'), bool):
+        return '請指定要沿用還是捨棄上次的進度。'
     return None
 
 
@@ -84,6 +88,9 @@ class AppState:
         self.volume_answer: list | None = None
         self.volume_answered = threading.Event()
         self.crawler = None  # the Linovelib2Epub instance, so its browser can be closed
+        self.total_chapters = 0
+        self.chapters_started = 0
+        self.first_chapter_at = 0.0
         self.page_seen = False  # the page has polled at least once
         self.last_poll = 0.0
         self.shutting_down = False
@@ -101,10 +108,35 @@ class AppState:
         with self.lock:
             self.lines.append(line)
 
+    def set_total_chapters(self, total: int) -> None:
+        with self.lock:
+            self.total_chapters = total
+
+    def note_chapter_started(self) -> None:
+        with self.lock:
+            self.chapters_started += 1
+            if self.first_chapter_at == 0.0:
+                self.first_chapter_at = time.monotonic()
+
+    def reset_progress(self) -> None:
+        with self.lock:
+            self.total_chapters = 0
+            self.chapters_started = 0
+            self.first_chapter_at = 0.0
+
+    def progress(self) -> dict:
+        with self.lock:
+            done = max(0, self.chapters_started - 1)  # the current chapter is not finished yet
+            total = self.total_chapters
+            elapsed = time.monotonic() - self.first_chapter_at if self.first_chapter_at else 0.0
+        return {'done': done, 'total': total, 'etaSeconds': estimate_remaining(done, total, elapsed)}
+
     def snapshot(self, cursor: int) -> dict:
+        progress = self.progress()
         with self.lock:
             cursor = max(0, min(cursor, len(self.lines)))
             return {
+                'progress': progress,
                 'running': self.running,
                 'result': self.result,
                 'lines': self.lines[cursor:],
@@ -121,9 +153,56 @@ class StateLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
+            message = record.getMessage()
+            if is_chapter_start(message):
+                self.state.note_chapter_started()
             self.state.add_line(self.format(record))
         except Exception:
             pass
+
+
+class FixedAnswer:
+    """The library asks whether to resume through a rich terminal prompt, which reads stdin. There
+    is no terminal behind a web page, so the question is answered from the form instead."""
+
+    def __init__(self, answer: bool) -> None:
+        self.answer = answer
+
+    def ask(self, *args, **kwargs) -> bool:
+        return self.answer
+
+
+def estimate_remaining(done: int, total: int, elapsed: float):
+    """Seconds still to go for the crawling phase, or None while there is nothing to go on."""
+    if done <= 0 or total <= 0 or elapsed <= 0 or done >= total:
+        return None
+    return elapsed / done * (total - done)
+
+
+def is_chapter_start(message: str) -> bool:
+    """The library has no progress API, so its own per-chapter log line is the signal.
+    A later line reports a renamed chapter and must not be counted twice."""
+    return message.startswith('chapter : ') and 'New Title=' not in message
+
+
+def count_chapters(catalog: list) -> int:
+    return sum(len(volume.chapters) for volume in catalog)
+
+
+def install_progress_hooks(state: AppState) -> None:
+    """Wrap the catalog parser of both spiders so the page knows how many chapters to expect."""
+    for spider_class in (LinovelibSpiderMobile, LinovelibSpiderPC):
+        original = spider_class._convert_to_catalog_list
+        if getattr(original, 'reports_progress', False):
+            continue  # already wrapped; wrapping again on every run would stack them
+
+        def wrapped(self, catalog_html, _original=original, _state=state):
+            catalog = _original(self, catalog_html)
+            _state.set_total_chapters(count_chapters(catalog))
+            return catalog
+
+        wrapped.reports_progress = True
+        spider_class._convert_to_catalog_list = wrapped
 
 
 def page_is_gone(page_seen: bool, seconds_since_poll: float, grace: float = 12.0) -> bool:
@@ -157,7 +236,9 @@ def make_volume_selector(state: AppState):
             state.volume_titles = None
         if not state.volume_answer:
             raise RuntimeError('已取消：沒有選擇任何一卷。')
-        return [catalog_list[row] for row in state.volume_answer]
+        chosen = [catalog_list[row] for row in state.volume_answer]
+        state.set_total_chapters(count_chapters(chosen))
+        return chosen
 
     return select
 
@@ -168,6 +249,8 @@ def run_crawl(state: AppState, form: dict) -> None:
         os.chdir(form['output_dir'])
         logger_module.DEFAULT_LOG_FOLDER = os.path.join(form['output_dir'], 'logs')
         state.add_line(f'開始下載書籍 {form["book_id"]}，輸出到 {form["output_dir"]}')
+        linovel_module.Confirm = FixedAnswer(form['resume'])
+        state.add_line('若偵測到上次未完成的進度：' + ('沿用' if form['resume'] else '捨棄重來'))
         crawler = Linovelib2Epub(**build_kwargs(form))
         state.crawler = crawler
         crawler.run()
@@ -287,6 +370,8 @@ class Handler(BaseHTTPRequestHandler):
             state.running = True
             state.result = None
             state.output_dir = form['output_dir']
+        state.reset_progress()
+        install_progress_hooks(state)
         BaseLinovelibSpider._handle_select_volume = staticmethod(make_volume_selector(state))
         threading.Thread(target=run_crawl, args=(state, form), daemon=True).start()
         self._send_json({'ok': True})

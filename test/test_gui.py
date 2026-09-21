@@ -20,6 +20,7 @@ def a_form(**overrides):
         'select_volume_mode': False,
         'has_illustration': True,
         'headless': True,
+        'resume': True,
     }
     form.update(overrides)
     return form
@@ -198,3 +199,92 @@ def test_any_other_argument_goes_to_the_command_line():
 
     assert route(['2978', '--site', 'linovelib_pc']) == ('cli', ['2978', '--site', 'linovelib_pc'])
     assert route(['--help']) == ('cli', ['--help'])
+
+
+def test_no_estimate_before_a_chapter_finishes():
+    from linovelib2epub.gui import estimate_remaining
+
+    assert estimate_remaining(done=0, total=120, elapsed=30.0) is None
+    assert estimate_remaining(done=5, total=0, elapsed=30.0) is None
+    assert estimate_remaining(done=5, total=120, elapsed=0.0) is None
+
+
+def test_no_estimate_once_every_chapter_is_done():
+    from linovelib2epub.gui import estimate_remaining
+
+    assert estimate_remaining(done=120, total=120, elapsed=600.0) is None
+
+
+def test_estimate_scales_with_the_measured_rate():
+    from linovelib2epub.gui import estimate_remaining
+
+    # 10 chapters took 100s, so each takes 10s, and 90 remain
+    assert estimate_remaining(done=10, total=100, elapsed=100.0) == 900.0
+
+
+def test_only_the_chapter_start_line_counts_as_progress():
+    from linovelib2epub.gui import is_chapter_start
+
+    assert is_chapter_start('chapter : 5 帝都') is True
+    # the library logs this again when it renames a chapter, which would double count
+    assert is_chapter_start('chapter : [5 帝都] New Title= [5 帝都 (1)]') is False
+    assert is_chapter_start('volume: 第一卷') is False
+    assert is_chapter_start('page https://example.invalid/1.html => ok.') is False
+
+
+def test_total_chapters_comes_from_the_catalog():
+    from types import SimpleNamespace
+
+    from linovelib2epub.gui import count_chapters
+
+    catalog = [SimpleNamespace(chapters=[1, 2, 3]), SimpleNamespace(chapters=[4, 5])]
+    assert count_chapters(catalog) == 5
+    assert count_chapters([]) == 0
+
+
+def test_state_reports_progress_from_the_chapter_log():
+    from linovelib2epub.gui import AppState
+
+    state = AppState()
+    state.set_total_chapters(10)
+    for _ in range(4):
+        state.note_chapter_started()
+
+    progress = state.progress()
+
+    # the fourth chapter is still being fetched, so three are done
+    assert progress['done'] == 3
+    assert progress['total'] == 10
+    assert progress['etaSeconds'] > 0
+
+
+def test_progress_resets_between_runs():
+    from linovelib2epub.gui import AppState
+
+    state = AppState()
+    state.set_total_chapters(10)
+    state.note_chapter_started()
+
+    state.reset_progress()
+
+    assert state.progress() == {'done': 0, 'total': 0, 'etaSeconds': None}
+
+
+def test_resume_is_not_passed_to_the_library_as_an_argument():
+    # the library has no resume parameter; the choice answers its terminal prompt instead
+    assert 'resume' not in build_kwargs(a_form(resume=True))
+
+
+def test_validate_requires_an_explicit_resume_choice():
+    form = a_form()
+    del form['resume']
+
+    assert validate(form) == '請指定要沿用還是捨棄上次的進度。'
+
+
+def test_fixed_answer_replaces_the_terminal_prompt():
+    from linovelib2epub.gui import FixedAnswer
+
+    # the library calls Confirm.ask(message); it must never reach stdin
+    assert FixedAnswer(True).ask('The last unfinished work was detected, continue?') is True
+    assert FixedAnswer(False).ask('anything', default=True) is False

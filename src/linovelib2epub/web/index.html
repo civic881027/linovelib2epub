@@ -56,6 +56,10 @@
     font-size: 13px; font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
   }
   #volumes { display: none; }
+  #progress { display: none; margin-bottom: 12px; }
+  .progress-line { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+  .bar { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .4s ease; }
   #volumeList { max-height: 300px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
   #volumeList label { display: flex; gap: 8px; align-items: flex-start; padding: 3px 0; color: var(--ink); }
   .notice { padding: 10px 12px; border-radius: 6px; border: 1px solid var(--line); margin-bottom: 12px; }
@@ -107,6 +111,7 @@
       <label><input type="checkbox" id="selectVolumeMode">自選卷數</label>
       <label><input type="checkbox" id="hasIllustration" checked>下載插圖</label>
       <label><input type="checkbox" id="headless" checked>隱藏瀏覽器視窗</label>
+      <label><input type="checkbox" id="resume" checked>沿用上次未完成的進度</label>
     </div>
 
     <div class="actions">
@@ -127,6 +132,13 @@
   <div class="panel">
     <h1 style="font-size:16px">執行紀錄</h1>
     <div id="message"></div>
+    <div id="progress">
+      <div class="progress-line">
+        <span id="progressText"></span>
+        <span id="etaText" class="hint"></span>
+      </div>
+      <div class="bar"><div id="barFill"></div></div>
+    </div>
     <div id="log"></div>
   </div>
 </main>
@@ -176,7 +188,8 @@ function readForm() {
     divide_volume: $('divideVolume').checked,
     select_volume_mode: $('selectVolumeMode').checked,
     has_illustration: $('hasIllustration').checked,
-    headless: $('headless').checked
+    headless: $('headless').checked,
+    resume: $('resume').checked
   };
 }
 
@@ -248,6 +261,24 @@ window.addEventListener('beforeunload', (event) => {
   if (running && !stopped) { event.preventDefault(); event.returnValue = ''; }
 });
 
+function formatDuration(seconds) {
+  const whole = Math.round(seconds);
+  if (whole < 60) return '約 ' + whole + ' 秒';
+  const minutes = Math.round(whole / 60);
+  if (minutes < 60) return '約 ' + minutes + ' 分鐘';
+  return '約 ' + Math.floor(minutes / 60) + ' 小時 ' + (minutes % 60) + ' 分';
+}
+
+function showProgress(progress) {
+  if (!progress || !progress.total) { $('progress').style.display = 'none'; return; }
+  $('progress').style.display = 'block';
+  $('progressText').textContent = '已抓取 ' + progress.done + ' / ' + progress.total + ' 章';
+  $('etaText').textContent = progress.etaSeconds
+    ? '預估剩餘 ' + formatDuration(progress.etaSeconds) + '（僅計章節抓取，不含圖片與轉檔）'
+    : '預估剩餘：計算中';
+  $('barFill').style.width = (progress.done / progress.total * 100) + '%';
+}
+
 async function poll() {
   if (stopped) return;
   try {
@@ -261,6 +292,7 @@ async function poll() {
       log.textContent += state.lines.join('\n') + '\n';
       if (atBottom) log.scrollTop = log.scrollHeight;
     }
+    showProgress(state.progress);
     if (state.volumes && !volumesShown) showVolumes(state.volumes);
     if (!state.volumes && volumesShown) { $('volumes').style.display = 'none'; volumesShown = false; }
     running = state.running;
