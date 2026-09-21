@@ -67,21 +67,39 @@ def test_a_half_built_index_only_restores_the_volumes_it_finished(tmp_path):
     assert fresh[1].chapters[0].chapter_url == 'http://x/3.html'  # untouched, still to be walked
 
 
-def test_index_is_rejected_when_the_book_gained_a_chapter():
-    saved = index_payload(a_catalog(), {1: '', 2: ''})
+def test_a_volume_that_gained_a_chapter_is_walked_again():
+    saved = index_payload(a_catalog(), {1: 'a', 2: 'b'})
     grown = a_catalog()
     grown[1].chapters.append(CatalogLinovelibChapter(chapter_title='c4', chapter_url='http://x/4.html'))
 
-    assert apply_index(grown, saved) == {}
+    # only the volume that changed is rebuilt; the rest of the book is still reused
+    assert apply_index(grown, saved) == {1: 'a'}
 
 
-def test_a_rejected_index_leaves_the_catalog_untouched():
-    saved = index_payload(a_catalog(), {1: '', 2: ''})
-    saved['volumes'][0]['vid'] = 99  # no longer describes this catalog
+def test_a_volume_whose_chapters_were_renamed_is_walked_again():
+    saved = index_payload(a_catalog(), {1: 'a', 2: 'b'})
+    renamed = a_catalog()
+    renamed[0].chapters[0].chapter_title = 'c1 (revised)'
+
+    assert apply_index(renamed, saved) == {2: 'b'}
+
+
+def test_the_index_applies_to_a_selection_of_volumes():
+    # picking one volume out of several must still reuse that volume's links, and the link its
+    # walk ended on, or a broken chapter link in it could not be resolved
+    saved = index_payload(a_catalog(), {1: 'http://x/3.html', 2: 'http://x/4.html'})
+    only_the_second = [a_catalog()[1]]
+
+    assert apply_index(only_the_second, saved) == {2: 'http://x/4.html'}
+
+
+def test_a_volume_missing_from_the_index_is_left_untouched():
+    saved = index_payload(a_catalog(), {1: 'a', 2: 'b'})
+    saved['volumes'][0]['vid'] = 99  # this volume is no longer described
     catalog = a_catalog()
 
-    assert apply_index(catalog, saved) == {}
-    assert catalog[0].chapters[1].chapter_url == 'javascript:cid(0)'
+    assert apply_index(catalog, saved) == {2: 'b'}
+    assert catalog[0].chapters[1].chapter_url == 'javascript:cid(0)'  # still to be resolved
 
 
 @pytest.mark.parametrize('payload', [None, {}, {'version': INDEX_VERSION + 1, 'volumes': []}])
@@ -89,11 +107,11 @@ def test_index_is_rejected_when_absent_or_from_another_version(payload):
     assert apply_index(a_catalog(), payload) == {}
 
 
-def test_a_finished_volume_without_a_usable_link_is_rejected():
-    saved = index_payload(a_catalog(), {1: '', 2: ''})
+def test_a_volume_without_a_usable_link_is_not_restored():
+    saved = index_payload(a_catalog(), {1: 'a', 2: 'b'})
     saved['volumes'][0]['chapters'][0]['url'] = ''
 
-    assert apply_index(a_catalog(), saved) == {}
+    assert apply_index(a_catalog(), saved) == {2: 'b'}
 
 
 def test_load_index_returns_none_for_a_damaged_file(tmp_path):
@@ -368,3 +386,22 @@ def test_the_wait_grows_and_is_skipped_on_the_last_attempt(tmp_path, monkeypatch
     slept.clear()
     spider._pause_before_page_retry('http://x/1.html', PAGE_ATTEMPT_LIMIT)
     assert slept == []  # nothing to wait for; the next step is giving up
+
+
+def test_a_volume_already_in_the_index_is_not_walked_again(tmp_path, monkeypatch):
+    spider = a_one_chapter_crawl(tmp_path, monkeypatch)
+    catalog = spider._convert_to_catalog_list('')
+    catalog[0].chapters[0].chapter_url = 'http://x/known.html'
+    spider._resume_store().save_index(catalog, {1: 'http://x/boundary.html'})
+
+    walked = []
+    monkeypatch.setattr(spider, '_expand_paginated_chapter_links',
+                        lambda chapter, url_next: walked.append(url_next) or 'walked')
+    fetched = []
+    monkeypatch.setattr(spider, '_fetch_page',
+                        lambda link, **kwargs: fetched.append(link) or ARTICLE)
+
+    spider._crawl_book_content('http://example.invalid/catalog')
+
+    assert walked == []                       # the saved links were used as they stand
+    assert fetched == ['http://x/known.html']  # and they are the ones fetched

@@ -238,7 +238,11 @@ class BaseLinovelibSpider(BaseNovelWebsiteSpider):
 
         def _wait_text_render_completed(page, url, css_selector):
             js_check = f"""
-            return document.querySelector("{css_selector}").clientHeight > 0;
+            const target = document.querySelector("{css_selector}");
+            // the selector matches nothing on a page with too few paragraphs, and passing null
+            // to the DOM api throws instead of simply meaning "nothing to wait for"
+            if (!target) {{ return false; }}
+            return target.clientHeight > 0;
             """
             p_loaded = page.run_js(js_check)
             while not p_loaded:
@@ -255,7 +259,10 @@ class BaseLinovelibSpider(BaseNovelWebsiteSpider):
             # hardcode 方式实在过于脆弱，今天是倒数第二个 p，明天要是改成倒数第三个 p 呢，或者有多个混淆的文本 p 呢？
             obfuscated_p_selector = "#TextContent p:nth-last-of-type(2)"
             js_check = f"""
-            const target_p = document.querySelector("{obfuscated_p_selector}");  
+            const target_p = document.querySelector("{obfuscated_p_selector}");
+            // a page with fewer than two paragraphs matches nothing, and getComputedStyle(null)
+            // throws; there is no obfuscated paragraph to patch in that case
+            if (!target_p) {{ return false; }}
             const p_style = window.getComputedStyle(target_p);
             const p_font_style = p_style.getPropertyValue('font-family');
             if (p_font_style && p_font_style.includes('read')) {{
@@ -1016,6 +1023,10 @@ class LinovelibSpiderPC(BaseLinovelibSpider):
                     self.logger.info(f'volume: {catalog_volume.volume_title} (already fetched, skipped)')
                     continue
 
+                # links restored from the index need no second walk, which is most of the
+                # requests this volume would otherwise make
+                links_known = volume_id in index
+
                 new_volume = LightNovelVolume(volume_id=volume_id)
                 new_volume.title = catalog_volume.volume_title
                 new_volume.explicit_volume_cover = catalog_volume.volume_cover
@@ -1037,7 +1048,8 @@ class LinovelibSpiderPC(BaseLinovelibSpider):
 
                     # 这个函数是含有状态的，必须及时覆盖 url_next 变量，否则状态机会失败。
                     # 注意：由于这里并不关心页面内容是否正常，只收集页面链接，因此这里暂时不需要应用请求间隔延迟。
-                    url_next = self._expand_paginated_chapter_links(catalog_chapter, url_next)
+                    if not links_known:
+                        url_next = self._expand_paginated_chapter_links(catalog_chapter, url_next)
 
                     # for loop [chapter_index_url]+[all paginated chapters] links of one chapter
                     for page_link in catalog_chapter.chapter_urls:
@@ -1125,9 +1137,13 @@ class LinovelibSpiderPC(BaseLinovelibSpider):
                                            illustrations=chapter.illustrations)
 
                 new_novel.add_volume(vid=new_volume.volume_id, title=new_volume.title, chapters=new_volume.chapters)
-                # the links of this volume are now known and its content is in hand: record both
-                index[volume_id] = url_next
-                store.save_index(catalog_list, index)
+                if links_known:
+                    # no walk happened, so continue from the link the recorded walk ended on
+                    url_next = index[volume_id]
+                else:
+                    # the links of this volume are now known: record them and where they ended
+                    index[volume_id] = url_next
+                    store.save_index(catalog_list, index)
                 store.save_partial(new_novel)
 
             # restored volumes come first, so put everything back into catalog order

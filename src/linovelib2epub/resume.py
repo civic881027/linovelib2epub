@@ -10,15 +10,17 @@ import os
 import pickle
 from typing import Any, Optional
 
-INDEX_VERSION = 2
+INDEX_VERSION = 3
 
 
 def index_payload(catalog_list: list, indexed: dict) -> dict:
-    """Serialise the resolved links. Only volumes listed in `indexed` are complete; the rest are
-    written as they stand so an interrupted index pass can continue where it stopped.
+    """Serialise the resolved links, keyed by volume id.
 
-    `indexed` maps a volume id to the link the pagination walk ended on, which is what the next
-    volume has to start from when a chapter's own catalog link is broken.
+    Only volumes listed in `indexed` are complete; the rest are written as they stand so an
+    interrupted pass can continue where it stopped. `indexed` maps a volume id to the link its
+    pagination walk ended on, which is what the next volume starts from when a chapter's own
+    catalog link is broken. Chapter titles are kept so a volume that changed is not restored
+    from stale links.
     """
     return {
         'version': INDEX_VERSION,
@@ -28,7 +30,9 @@ def index_payload(catalog_list: list, indexed: dict) -> dict:
                 'indexed': volume.vid in indexed,
                 'url_next_after': indexed.get(volume.vid, ''),
                 'chapters': [
-                    {'url': chapter.chapter_url, 'pages': list(chapter.other_paginated_chapter_urls)}
+                    {'title': chapter.chapter_title,
+                     'url': chapter.chapter_url,
+                     'pages': list(chapter.other_paginated_chapter_urls)}
                     for chapter in volume.chapters
                 ],
             }
@@ -37,29 +41,34 @@ def index_payload(catalog_list: list, indexed: dict) -> dict:
     }
 
 
-def apply_index(catalog_list: list, payload: Optional[dict]) -> dict:
-    """Put the saved links back into a freshly parsed catalog.
+def _is_usable(saved: dict, volume) -> bool:
+    chapters = saved.get('chapters')
+    if not saved.get('indexed') or not isinstance(chapters, list):
+        return False
+    if len(chapters) != len(volume.chapters):
+        return False
+    return all(chapter.get('url') and chapter.get('title') == actual.chapter_title
+               for chapter, actual in zip(chapters, volume.chapters))
 
-    Returns a map of the volume ids that were restored to the link the walk ended on. An empty
-    map means nothing was reused and the catalog was left untouched, which is what happens when
-    the book has gained a volume or a chapter since the index was written.
+
+def apply_index(catalog_list: list, payload: Optional[dict]) -> dict:
+    """Put the saved links back into a freshly parsed catalog, volume by volume.
+
+    Matching is by volume id rather than by position, so a run that crawls only some of the
+    volumes still gets the links of the ones it asked for. Returns a map of the restored volume
+    ids to the link their walk ended on; volumes that changed since the index was written are
+    left untouched and simply walked again.
     """
     if not isinstance(payload, dict) or payload.get('version') != INDEX_VERSION:
         return {}
     volumes = payload.get('volumes')
-    if not isinstance(volumes, list) or len(volumes) != len(catalog_list):
+    if not isinstance(volumes, list):
         return {}
-    for saved, volume in zip(volumes, catalog_list):
-        chapters = saved.get('chapters')
-        if saved.get('vid') != volume.vid or not isinstance(chapters, list):
-            return {}
-        if len(chapters) != len(volume.chapters):
-            return {}
-        if saved.get('indexed') and any(not chapter.get('url') for chapter in chapters):
-            return {}
+    by_vid = {saved.get('vid'): saved for saved in volumes if isinstance(saved, dict)}
     restored = {}
-    for saved, volume in zip(volumes, catalog_list):
-        if not saved.get('indexed'):
+    for volume in catalog_list:
+        saved = by_vid.get(volume.vid)
+        if saved is None or not _is_usable(saved, volume):
             continue
         for saved_chapter, chapter in zip(saved['chapters'], volume.chapters):
             chapter.chapter_url = saved_chapter['url']
