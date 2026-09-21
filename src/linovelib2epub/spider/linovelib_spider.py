@@ -28,6 +28,13 @@ from ..resume import ResumeStore, apply_index
 from ..utils import (create_folder_if_not_exists, requests_get_with_retry)
 
 
+# A page can come back with a good status and still not be the article: the site answers a
+# rate-limited or unsupported request with a different page. Retrying is right, but these loops
+# used to have no way out, and a run that hit one could only be killed.
+PAGE_ATTEMPT_LIMIT = 3
+PAGE_RETRY_PAUSE_SECONDS = 30
+
+
 class BaseLinovelibSpider(BaseNovelWebsiteSpider):
 
     def __init__(self, spider_settings: Optional[Dict] = None):
@@ -470,6 +477,20 @@ class BaseLinovelibSpider(BaseNovelWebsiteSpider):
         catalog_list = _reduce_catalog_by_selection(catalog_list, answers[question_name])
         return catalog_list
 
+    def _pause_before_page_retry(self, page_link: str, attempt: int) -> None:
+        """Wait longer each time; rate limiting needs time, not another immediate request."""
+        if attempt >= PAGE_ATTEMPT_LIMIT:
+            return
+        pause = PAGE_RETRY_PAUSE_SECONDS * attempt
+        self.logger.warning(f'{page_link} did not return the article page '
+                            f'(attempt {attempt}/{PAGE_ATTEMPT_LIMIT}); waiting {pause}s.')
+        sleep(pause)
+
+    def _give_up_on_page(self, page_link: str) -> None:
+        raise PageContentAbnormalException(
+            f'{page_link} did not return the article page after {PAGE_ATTEMPT_LIMIT} attempts. '
+            f'The site is most likely rate limiting; try again later, or raise the delay settings.')
+
     def _resume_store(self) -> ResumeStore:
         return ResumeStore(self.spider_settings['pickle_temp_folder'],
                            self.spider_settings['log_filename'])
@@ -701,7 +722,7 @@ class LinovelibSpiderMobile(BaseLinovelibSpider):
                         soup = None
                         new_title = None
                         article_page_element = None
-                        while True:
+                        for attempt in range(1, PAGE_ATTEMPT_LIMIT + 1):
                             try:
                                 page_resp = self._fetch_page(page_link,
                                                              max_retries=self.spider_settings['http_retries'])
@@ -717,14 +738,16 @@ class LinovelibSpiderMobile(BaseLinovelibSpider):
                                 break
                             except (EmptyTitleError, NotIntactTextError) as ex:
                                 self.logger.error(f'url: {page_link}; {ex}')
-                                continue
+                                self._pause_before_page_retry(page_link, attempt)
                             except EmptyArticleError as ex:
                                 self.logger.error(f'url: {page_link}; {ex}; Exit eagerly.')
                                 # very sad path
                                 sys.exit(-1)
                             except (Exception,) as ex:
                                 self.logger.error(f'url: {page_link}; {ex}')
-                                continue
+                                self._pause_before_page_retry(page_link, attempt)
+                        else:
+                            self._give_up_on_page(page_link)
 
                         # 分页判断过滤
                         if not new_title.text.startswith(light_novel_chapter.title):
@@ -1020,12 +1043,12 @@ class LinovelibSpiderPC(BaseLinovelibSpider):
                     for page_link in catalog_chapter.chapter_urls:
                         self._apply_crawl_delay('page_crawl_delay')
 
-                        while True:
+                        for attempt in range(1, PAGE_ATTEMPT_LIMIT + 1):
                             try:
                                 html_resp = self._fetch_page(page_link,
                                                              max_retries=self.spider_settings['http_retries'])
                             except (Exception,):
-                                continue
+                                html_resp = ''
 
                             # # double check if the title exists
                             html_resp = html_resp or ''
@@ -1035,6 +1058,9 @@ class LinovelibSpiderPC(BaseLinovelibSpider):
                                 new_title = main_text.select_one('h1').text
                                 self.logger.debug(f'page({page_link}) size={len(html_resp)}')
                                 break
+                            self._pause_before_page_retry(page_link, attempt)
+                        else:
+                            self._give_up_on_page(page_link)
 
                         # 分页判断过滤
                         if not new_title.startswith(light_novel_chapter.title):

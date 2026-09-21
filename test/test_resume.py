@@ -6,7 +6,9 @@ import pytest
 
 from linovelib2epub.models import CatalogLinovelibChapter, CatalogLinovelibVolume, LightNovel
 from linovelib2epub.resume import INDEX_VERSION, ResumeStore, apply_index, index_payload
-from linovelib2epub.spider.linovelib_spider import LinovelibSpiderPC
+from linovelib2epub.exceptions import PageContentAbnormalException
+from linovelib2epub.spider.linovelib_spider import (PAGE_ATTEMPT_LIMIT, PAGE_RETRY_PAUSE_SECONDS,
+                                                    LinovelibSpiderPC)
 
 
 def a_catalog():
@@ -293,3 +295,76 @@ def test_closing_twice_is_harmless(tmp_path, monkeypatch):
     spider.close()
 
     assert spider._driver is None
+
+
+# ---------- a page that never returns the article ----------
+
+ARTICLE = '<div id="mlfy_main_text"><h1>c1</h1><div id="TextContent"><p>hi</p></div></div>'
+NOT_THE_ARTICLE = '<html><body>You are being rate limited</body></html>'
+
+
+def a_one_chapter_crawl(tmp_path, monkeypatch):
+    spider = a_spider(tmp_path, monkeypatch)
+    catalog = [CatalogLinovelibVolume(vid=1, volume_title='v1', chapters=[
+        CatalogLinovelibChapter(chapter_title='c1', chapter_url='http://x/1.html')])]
+    monkeypatch.setattr(spider, '_fetch_catalog', lambda *args, **kwargs: '<html/>')
+    monkeypatch.setattr(spider, '_convert_to_catalog_list', lambda html: catalog)
+    monkeypatch.setattr(spider, '_remove_duplicate_images_in_html', lambda chapter_list: None)
+    monkeypatch.setattr(spider, '_expand_paginated_chapter_links', lambda chapter, url_next: 'after')
+    monkeypatch.setattr(spider, '_apply_crawl_delay', lambda name: None)
+    monkeypatch.setattr(spider, '_pause_before_page_retry', lambda link, attempt: None)
+    return spider
+
+
+def test_a_page_that_never_returns_the_article_gives_up(tmp_path, monkeypatch):
+    spider = a_one_chapter_crawl(tmp_path, monkeypatch)
+    attempts = []
+    monkeypatch.setattr(spider, '_fetch_page',
+                        lambda *args, **kwargs: attempts.append(1) or NOT_THE_ARTICLE)
+
+    with pytest.raises(PageContentAbnormalException):
+        spider._crawl_book_content('http://example.invalid/catalog')
+
+    # it used to retry for ever; now it stops and says why
+    assert len(attempts) == PAGE_ATTEMPT_LIMIT
+
+
+def test_a_page_that_comes_good_on_a_later_attempt_is_kept(tmp_path, monkeypatch):
+    spider = a_one_chapter_crawl(tmp_path, monkeypatch)
+    pages = [NOT_THE_ARTICLE, ARTICLE]
+    monkeypatch.setattr(spider, '_fetch_page', lambda *args, **kwargs: pages.pop(0))
+
+    novel = spider._crawl_book_content('http://example.invalid/catalog')
+
+    assert pages == []  # both attempts were used
+    assert [volume.volume_id for volume in novel.volumes] == [1]
+
+
+def test_a_fetch_that_raises_counts_as_an_attempt_rather_than_looping(tmp_path, monkeypatch):
+    spider = a_one_chapter_crawl(tmp_path, monkeypatch)
+    attempts = []
+
+    def explode(*args, **kwargs):
+        attempts.append(1)
+        raise OSError('connection reset')
+
+    monkeypatch.setattr(spider, '_fetch_page', explode)
+
+    with pytest.raises(PageContentAbnormalException):
+        spider._crawl_book_content('http://example.invalid/catalog')
+
+    assert len(attempts) == PAGE_ATTEMPT_LIMIT
+
+
+def test_the_wait_grows_and_is_skipped_on_the_last_attempt(tmp_path, monkeypatch):
+    spider = a_spider(tmp_path, monkeypatch)
+    slept = []
+    monkeypatch.setattr('linovelib2epub.spider.linovelib_spider.sleep', lambda seconds: slept.append(seconds))
+
+    spider._pause_before_page_retry('http://x/1.html', 1)
+    spider._pause_before_page_retry('http://x/1.html', 2)
+    assert slept == [PAGE_RETRY_PAUSE_SECONDS, PAGE_RETRY_PAUSE_SECONDS * 2]
+
+    slept.clear()
+    spider._pause_before_page_retry('http://x/1.html', PAGE_ATTEMPT_LIMIT)
+    assert slept == []  # nothing to wait for; the next step is giving up
