@@ -1,12 +1,11 @@
 """A stop request ends the crawl at its next pause instead of after the whole book."""
 import logging
 import threading
-import time
 
 import pytest
 
 from linovelib2epub.exceptions import CrawlStopped
-from linovelib2epub.spider.linovelib_spider import PAGE_RETRY_PAUSE_SECONDS, LinovelibSpiderPC
+from linovelib2epub.spider.linovelib_spider import LinovelibSpiderPC
 
 
 def a_spider(stop_event=None, **settings):
@@ -17,26 +16,30 @@ def a_spider(stop_event=None, **settings):
     return spider
 
 
-def test_a_requested_stop_ends_the_delay_at_once():
+def never_sleep(monkeypatch):
+    """Timing is not measured (Windows timers are coarse); a plain sleep would be the failure."""
+    def fail(seconds):
+        raise AssertionError(f'slept {seconds}s instead of noticing the stop')
+    monkeypatch.setattr('linovelib2epub.spider.base_spider.time.sleep', fail)
+
+
+def test_a_requested_stop_ends_the_delay_at_once(monkeypatch):
+    never_sleep(monkeypatch)
     event = threading.Event()
     event.set()
-    started = time.monotonic()
 
     with pytest.raises(CrawlStopped):
         a_spider(event)._apply_crawl_delay('chapter_crawl_delay')
 
-    assert time.monotonic() - started < 1
 
-
-def test_a_stop_during_the_delay_does_not_wait_it_out():
+def test_a_stop_during_the_delay_does_not_wait_it_out(monkeypatch):
+    never_sleep(monkeypatch)
     event = threading.Event()
     threading.Timer(0.1, event.set).start()
-    started = time.monotonic()
 
+    # without the stop the 5 s delay would run out and nothing would be raised
     with pytest.raises(CrawlStopped):
         a_spider(event)._apply_crawl_delay('chapter_crawl_delay')
-
-    assert time.monotonic() - started < 2
 
 
 def test_a_zero_delay_still_notices_the_stop():
@@ -67,12 +70,10 @@ def test_without_a_stop_signal_the_delay_is_a_plain_sleep(monkeypatch):
     assert slept == [3]
 
 
-def test_the_rate_limit_pause_also_gives_up_when_stopped():
+def test_the_rate_limit_pause_also_gives_up_when_stopped(monkeypatch):
+    never_sleep(monkeypatch)
     event = threading.Event()
     event.set()
-    started = time.monotonic()
 
     with pytest.raises(CrawlStopped):
         a_spider(event)._pause_before_page_retry('http://x/1.html', 1)
-
-    assert time.monotonic() - started < min(1, PAGE_RETRY_PAUSE_SECONDS)
