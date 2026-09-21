@@ -137,21 +137,76 @@ def test_page_is_gone_only_after_the_page_has_polled_once():
     from linovelib2epub.gui import page_is_gone
 
     # a slow-starting browser has not polled yet, so it is never judged gone
-    assert page_is_gone(page_seen=False, seconds_since_poll=9999.0, grace=12.0) is False
+    assert page_is_gone(page_seen=False, seconds_since_poll=9999.0, grace=60.0) is False
 
 
-def test_page_is_gone_when_polling_stops():
+def test_an_idle_page_is_gone_after_a_long_silence():
     from linovelib2epub.gui import page_is_gone
 
-    assert page_is_gone(page_seen=True, seconds_since_poll=12.5, grace=12.0) is True
+    assert page_is_gone(page_seen=True, seconds_since_poll=60.5, running=False, grace=60.0) is True
 
 
 def test_page_is_not_gone_while_it_keeps_polling():
     from linovelib2epub.gui import page_is_gone
 
-    assert page_is_gone(page_seen=True, seconds_since_poll=1.0, grace=12.0) is False
+    assert page_is_gone(page_seen=True, seconds_since_poll=1.0, grace=60.0) is False
     # a page reload pauses polling briefly and must not kill the program
-    assert page_is_gone(page_seen=True, seconds_since_poll=12.0, grace=12.0) is False
+    assert page_is_gone(page_seen=True, seconds_since_poll=60.0, grace=60.0) is False
+
+
+def test_a_silent_page_never_ends_a_running_download():
+    from linovelib2epub.gui import page_is_gone
+
+    # Chrome discards background tabs; the download must survive that
+    assert page_is_gone(page_seen=True, seconds_since_poll=9999.0, running=True, grace=60.0) is False
+
+
+def test_a_goodbye_counts_once_the_grace_has_passed_without_a_new_poll():
+    from linovelib2epub.gui import page_said_bye
+
+    assert page_said_bye(bye_at=100.0, last_poll=99.5, now=103.5, grace=3.0) is True
+    assert page_said_bye(bye_at=100.0, last_poll=99.5, now=103.0, grace=3.0) is False  # boundary
+    assert page_said_bye(bye_at=100.0, last_poll=99.5, now=101.0, grace=3.0) is False
+
+
+def test_a_reloaded_page_cancels_the_goodbye():
+    from linovelib2epub.gui import page_said_bye
+
+    # the reload unloads the old page (goodbye) and the new one polls again within the grace
+    assert page_said_bye(bye_at=100.0, last_poll=101.0, now=110.0, grace=3.0) is False
+
+
+def test_no_goodbye_yet_means_nothing_to_act_on():
+    from linovelib2epub.gui import page_said_bye
+
+    assert page_said_bye(bye_at=0.0, last_poll=0.0, now=9999.0, grace=3.0) is False
+
+
+def test_the_watchdog_quits_after_a_goodbye_but_not_while_downloading(monkeypatch):
+    import threading
+
+    from linovelib2epub import gui
+
+    class FakeServer:
+        def __init__(self):
+            self.state = gui.AppState()
+            self.stopped_for = []
+
+    server = FakeServer()
+    monkeypatch.setattr(gui, 'stop_everything', lambda srv, reason: srv.stopped_for.append(reason))
+    server.state.mark_poll()
+    server.state.running = True
+    server.state.last_poll -= 9999  # a discarded tab: silent for ages while downloading
+
+    watcher = threading.Thread(daemon=True, target=gui.watch_page, args=(server, 60.0, 0.01))
+    watcher.start()
+    time.sleep(0.1)
+    assert server.stopped_for == []  # silence alone does not end a download
+
+    server.state.mark_bye()
+    server.state.bye_at -= 5  # the goodbye is older than its grace and no poll followed
+    watcher.join(timeout=2)
+    assert server.stopped_for == ['瀏覽器頁面已關閉，程式結束。']
 
 
 def test_close_browser_releases_the_crawlers_browser():
@@ -305,3 +360,191 @@ def test_fixed_answer_replaces_the_terminal_prompt():
     # the library calls Confirm.ask(message); it must never reach stdin
     assert FixedAnswer(True).ask('The last unfinished work was detected, continue?') is True
     assert FixedAnswer(False).ask('anything', default=True) is False
+
+
+# ---------- the volume question: an answer names the question it answers ----------
+
+def wait_for_question(state, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if state.snapshot(0)['volumes'] is not None:
+            return
+        time.sleep(0.01)
+    raise AssertionError('the volume question never appeared')
+
+
+def a_catalog():
+    from types import SimpleNamespace
+
+    return [SimpleNamespace(volume_title='v1', chapters=[1]),
+            SimpleNamespace(volume_title='v2', chapters=[2, 3])]
+
+
+def test_only_an_answer_to_the_current_question_counts():
+    import threading
+
+    from linovelib2epub.gui import AppState, answer_volumes, make_volume_selector
+
+    state = AppState()
+    chosen = []
+    worker = threading.Thread(daemon=True, target=lambda: chosen.append(make_volume_selector(state)(a_catalog())))
+    worker.start()
+    wait_for_question(state)
+    assert state.snapshot(0)['volumeRequest'] == 1
+
+    # a stale page (or a double click on the re-shown panel) answers an earlier question
+    assert answer_volumes(state, {'selected': [], 'request': 0}) is False
+    assert worker.is_alive()
+
+    assert answer_volumes(state, {'selected': [1], 'request': 1}) is True
+    assert state.snapshot(0)['volumes'] is None  # cleared for the next poll, not only by the worker
+    worker.join(timeout=2)
+    assert [volume.volume_title for volume in chosen[0]] == ['v2']
+    assert state.progress()['total'] == 2
+
+
+def test_an_answer_when_nothing_is_asked_is_ignored():
+    from linovelib2epub.gui import AppState, answer_volumes
+
+    state = AppState()
+
+    assert answer_volumes(state, {'selected': [0], 'request': 0}) is False
+    assert not state.volume_answered.is_set()
+
+
+def test_choosing_nothing_cancels_the_run():
+    import threading
+
+    from linovelib2epub.gui import AppState, answer_volumes, make_volume_selector
+
+    state = AppState()
+    errors = []
+
+    def run():
+        try:
+            make_volume_selector(state)(a_catalog())
+        except RuntimeError as error:
+            errors.append(str(error))
+
+    worker = threading.Thread(daemon=True, target=run)
+    worker.start()
+    wait_for_question(state)
+    answer_volumes(state, {'selected': [], 'request': 1})
+    worker.join(timeout=2)
+
+    assert errors == ['已取消：沒有選擇任何一卷。']
+
+
+# ---------- stopping the download without ending the program ----------
+
+def test_stop_does_nothing_while_no_download_runs():
+    from linovelib2epub.gui import AppState, request_stop
+
+    state = AppState()
+
+    assert request_stop(state) is False
+    assert not state.stop_event.is_set()
+
+
+def test_stop_sets_the_signal_the_crawl_watches():
+    from linovelib2epub.gui import AppState, request_stop
+
+    state = AppState()
+    state.running = True
+
+    assert request_stop(state) is True
+    assert state.stop_event.is_set()
+
+
+def test_stop_wakes_a_crawl_waiting_for_the_volume_choice():
+    import threading
+
+    from linovelib2epub.exceptions import CrawlStopped
+    from linovelib2epub.gui import AppState, make_volume_selector, request_stop
+
+    state = AppState()
+    state.running = True
+    outcome = []
+
+    def run():
+        try:
+            make_volume_selector(state)(a_catalog())
+        except CrawlStopped:
+            outcome.append('stopped')
+
+    worker = threading.Thread(daemon=True, target=run)
+    worker.start()
+    wait_for_question(state)
+    request_stop(state)
+    worker.join(timeout=2)
+
+    assert outcome == ['stopped']
+    assert state.snapshot(0)['volumes'] is None
+
+
+def test_a_stop_requested_before_the_question_is_not_missed():
+    from linovelib2epub.exceptions import CrawlStopped
+    from linovelib2epub.gui import AppState, make_volume_selector, request_stop
+
+    state = AppState()
+    state.running = True
+    request_stop(state)
+
+    with pytest.raises(CrawlStopped):
+        make_volume_selector(state)(a_catalog())
+
+
+class FakeCrawler:
+    outcome = None  # an exception to raise from run(), or None
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.closed = False
+
+    def run(self):
+        if self.outcome is not None:
+            raise self.outcome
+
+    def close(self):
+        self.closed = True
+
+
+def a_crawl(monkeypatch, tmp_path, outcome):
+    from linovelib2epub import gui
+
+    monkeypatch.chdir(tmp_path)  # run_crawl changes directory to the output folder
+    monkeypatch.setattr(gui.logger_module, 'DEFAULT_LOG_FOLDER', gui.logger_module.DEFAULT_LOG_FOLDER)
+    monkeypatch.setattr(gui.linovel_module, 'Confirm', gui.linovel_module.Confirm)
+    monkeypatch.setattr(FakeCrawler, 'outcome', outcome)
+    monkeypatch.setattr(gui, 'Linovelib2Epub', FakeCrawler)
+    state = gui.AppState()
+    state.running = True
+    gui.run_crawl(state, a_form(output_dir=str(tmp_path)))
+    return state
+
+
+def test_a_stopped_download_is_reported_as_stopped_not_failed(monkeypatch, tmp_path):
+    from linovelib2epub.exceptions import CrawlStopped
+
+    state = a_crawl(monkeypatch, tmp_path, CrawlStopped())
+
+    snapshot = state.snapshot(0)
+    assert snapshot['stopped'] is True
+    assert snapshot['running'] is False
+    assert snapshot['result'] == '已停止下載。'
+    assert '已停止下載。' in snapshot['lines']
+
+
+def test_the_crawl_gets_the_stop_signal_of_this_run(monkeypatch, tmp_path):
+    state = a_crawl(monkeypatch, tmp_path, None)
+
+    assert state.crawler.kwargs['stop_event'] is state.stop_event
+    assert state.snapshot(0)['result'] == ''
+
+
+def test_a_failure_is_still_a_failure(monkeypatch, tmp_path):
+    state = a_crawl(monkeypatch, tmp_path, RuntimeError('boom'))
+
+    snapshot = state.snapshot(0)
+    assert snapshot['stopped'] is False
+    assert snapshot['result'] == 'boom'

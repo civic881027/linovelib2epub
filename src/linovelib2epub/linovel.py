@@ -2,6 +2,7 @@ import io
 import os
 import pickle
 import shutil
+import threading
 import time
 import urllib.parse
 from enum import Enum
@@ -17,7 +18,7 @@ from rich.prompt import Confirm
 
 from . import settings
 from .exceptions import LinovelibException
-from .logger import Logger
+from .logger import Logger, start_fresh_log
 from .models import LightNovel, LightNovelVolume, LightNovelImage
 from .resume import ResumeStore
 from .spider import ASYNCIO, LinovelibSpiderMobile, LinovelibSpiderPC  # type: ignore[attr-defined]
@@ -360,7 +361,8 @@ class Linovelib2Epub:
                  page_crawl_delay: int | None = None,
                  headless: bool = False,
                  image_download_max_epochs: int | None = None,
-                 resume: bool = True
+                 resume: bool = True,
+                 stop_event: threading.Event | None = None
                  ):
         # common mandatory parameters check
         if book_id is None:
@@ -439,7 +441,9 @@ class Linovelib2Epub:
             'page_crawl_delay': page_crawl_delay,
             'headless': headless,
             'crawling_contentid': crawling_contentid,
-            'on_volume_ready': self._write_finished_volume
+            'on_volume_ready': self._write_finished_volume,
+            # set by the caller to end the crawl early; the spider checks it between requests
+            'stop_event': stop_event
         }
 
         if image_download_max_epochs is not None:
@@ -453,6 +457,8 @@ class Linovelib2Epub:
             TargetSite.MASIRO: MasiroSpider,
             TargetSite.WENKU8: Wenku8Spider,
         }
+        # one log file per book, holding only the latest run: the spider below writes the first lines
+        start_fresh_log(cast(str, self.common_settings['log_filename']))
         self._spider = site_to_spider[self.target_site](spider_settings=self.spider_settings)
 
         self.epub_settings = {

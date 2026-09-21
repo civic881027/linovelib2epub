@@ -20,3 +20,9 @@ class EmptyArticleError(LinovelibException):
 class NotIntactTextError(LinovelibException):
     def __init__(self, message="The text content is not intact"):
         super().__init__(message)
+
+
+class CrawlStopped(LinovelibException):
+    """The crawl ended early because the user asked it to stop."""
+    def __init__(self, message="The crawl was stopped on request"):
+        super().__init__(message)

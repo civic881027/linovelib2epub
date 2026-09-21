@@ -15,7 +15,7 @@ from aiohttp import ClientSession
 from bs4 import BeautifulSoup
 from requests.exceptions import ProxyError
 
-from ..exceptions import LinovelibException
+from ..exceptions import CrawlStopped, LinovelibException
 from ..logger import Logger
 from ..models import LightNovel, LightNovelImage, LightNovelVolume, LightNovelChapter, CatalogMasiroVolume, \
     CatalogBaseVolume
@@ -66,6 +66,16 @@ class BaseNovelWebsiteSpider(ABC):
     @abstractmethod
     def fetch(self) -> LightNovel:
         raise NotImplementedError("Note: subclass must implement this method to do real fetch logic.")
+
+    def _wait_unless_stopped(self, seconds: float) -> None:
+        """Sleep for the given time, but give up the crawl at once when a stop was requested.
+        The stop_event setting is optional; without it this is a plain sleep."""
+        stop_event = self.spider_settings.get('stop_event')
+        if stop_event is None:
+            time.sleep(seconds)
+            return
+        if stop_event.wait(seconds):
+            raise CrawlStopped()
 
     def request_headers(self) -> Dict[str, Any]:
         """

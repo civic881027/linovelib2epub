@@ -9,6 +9,17 @@ from rich.logging import RichHandler
 DEFAULT_LOG_FOLDER = os.path.join(os.getcwd(), 'logs')
 
 
+def start_fresh_log(log_filename: str, log_dir: Optional[str] = None) -> str:
+    """Empty the log file of this run so it holds only this run. Every Logger appends to it, so
+    this is done once, before the first Logger of the run is created. Returns the file path."""
+    folder = log_dir or DEFAULT_LOG_FOLDER
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, f'{log_filename}.log')
+    with open(path, 'w', encoding='utf-8'):
+        pass
+    return path
+
+
 class Logger:
     NAME_TO_LEVEL = {
         'INFO': INFO,

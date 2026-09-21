@@ -116,8 +116,10 @@
 
     <div class="actions">
       <button id="start">開始下載</button>
-      <button id="quit" class="secondary">停止並結束程式</button>
+      <button id="stop" class="secondary" disabled>停止下載</button>
+      <button id="quit" class="secondary">結束程式</button>
     </div>
+    <div class="hint" style="margin-top:10px">下載中可以切到其他分頁；Chrome 若把這個分頁捨棄，下載仍會繼續，點回來即可看到進度。要避免被捨棄，可把分頁釘選，或在 Chrome「效能」設定將 127.0.0.1 加入永遠保持啟用。</div>
   </div>
 
   <div class="panel" id="volumes">
@@ -149,7 +151,10 @@ const TOKEN = new URLSearchParams(location.search).get('token') || '';
 const $ = (id) => document.getElementById(id);
 let cursor = 0;
 let volumesShown = false;
+let volumeRequest = 0;    // the question on screen
+let answeredRequest = 0;  // the question last answered; a stale poll must not bring it back
 let running = false;
+let stopRequested = false;
 let stopped = false;
 let everConnected = false;
 
@@ -206,6 +211,7 @@ function showMessage(text, kind) {
 $('start').addEventListener('click', async () => {
   showMessage('');
   $('start').disabled = true;
+  stopRequested = false;
   try {
     const response = await api('/api/start', {method: 'POST', body: JSON.stringify(readForm())});
     const data = await response.json();
@@ -226,10 +232,12 @@ $('volumeCancel').addEventListener('click', () => sendVolumes([]));
 async function sendVolumes(selected) {
   $('volumes').style.display = 'none';
   volumesShown = false;
-  await api('/api/volumes', {method: 'POST', body: JSON.stringify({selected})});
+  answeredRequest = volumeRequest;
+  await api('/api/volumes', {method: 'POST', body: JSON.stringify({selected, request: volumeRequest})});
 }
 
-function showVolumes(titles) {
+function showVolumes(titles, request) {
+  volumeRequest = request;
   const list = $('volumeList');
   list.innerHTML = '';
   titles.forEach((title, index) => {
@@ -246,19 +254,38 @@ function showVolumes(titles) {
   $('volumes').scrollIntoView({behavior: 'smooth'});
 }
 
+// Stops only the download; the program keeps serving this page so another one can be started.
+$('stop').addEventListener('click', async () => {
+  stopRequested = true;
+  $('stop').disabled = true;
+  try {
+    await api('/api/stop', {method: 'POST'});
+    showMessage('正在停止，目前這一步結束後就會停下。');
+  } catch (error) {
+    showMessage('無法連線到本機程式：' + error, 'bad');
+  }
+});
+
 $('quit').addEventListener('click', async () => {
-  if (running && !confirm('下載還在進行中，確定要停止並結束程式嗎？')) return;
+  if (running && !confirm('下載還在進行中，確定要結束程式嗎？')) return;
   stopped = true;
   running = false;
   try { await api('/api/quit', {method: 'POST'}); } catch (error) { /* it exits before replying */ }
   showMessage('程式已結束，可以關閉這個分頁。');
   $('start').disabled = true;
+  $('stop').disabled = true;
   $('quit').disabled = true;
 });
 
-// The program exits a few seconds after this page stops polling, so warn before an accidental close.
+// Closing this page ends the program, so warn before an accidental close while downloading.
 window.addEventListener('beforeunload', (event) => {
   if (running && !stopped) { event.preventDefault(); event.returnValue = ''; }
+});
+// Tell the program the page is going away. A reload also fires this; the program waits a moment
+// for the reloaded page before quitting. A tab Chrome discards in the background does not fire it,
+// so a discarded tab never ends a running download. sendBeacon cannot set headers: token in the URL.
+window.addEventListener('pagehide', () => {
+  if (!stopped) navigator.sendBeacon('/api/bye?token=' + encodeURIComponent(TOKEN));
 });
 
 function formatDuration(seconds) {
@@ -293,12 +320,16 @@ async function poll() {
       if (atBottom) log.scrollTop = log.scrollHeight;
     }
     showProgress(state.progress);
-    if (state.volumes && !volumesShown) showVolumes(state.volumes);
+    if (state.volumes && !volumesShown && state.volumeRequest !== answeredRequest) {
+      showVolumes(state.volumes, state.volumeRequest);
+    }
     if (!state.volumes && volumesShown) { $('volumes').style.display = 'none'; volumesShown = false; }
     running = state.running;
     $('start').disabled = state.running;
+    $('stop').disabled = !state.running || stopRequested;
     if (!state.running && state.result !== null) {
-      if (state.result === '') showMessage('完成，EPUB 已輸出到 ' + state.outputDir, 'good');
+      if (state.stopped) showMessage('已停止下載。');
+      else if (state.result === '') showMessage('完成，EPUB 已輸出到 ' + state.outputDir, 'good');
       else showMessage('失敗：' + state.result, 'bad');
     }
   } catch (error) {

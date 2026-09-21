@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 from linovelib2epub import Linovelib2Epub, TargetSite
 from linovelib2epub import linovel as linovel_module
 from linovelib2epub.app import ensure_std_streams
+from linovelib2epub.exceptions import CrawlStopped
 from linovelib2epub import logger as logger_module
 from linovelib2epub.spider.linovelib_spider import (BaseLinovelibSpider, LinovelibSpiderMobile,
                                                     LinovelibSpiderPC)
@@ -88,13 +89,17 @@ class AppState:
         self.volume_titles: list | None = None  # set while the user is being asked
         self.volume_answer: list | None = None
         self.volume_answered = threading.Event()
+        self.volume_request = 0  # numbers the questions, so a late answer to an earlier one is ignored
         self.crawler = None  # the Linovelib2Epub instance, so its browser can be closed
         self.total_chapters = 0
         self.chapters_started = 0
         self.first_chapter_at = 0.0
         self.page_seen = False  # the page has polled at least once
         self.last_poll = 0.0
+        self.bye_at = 0.0  # when the page said it was closing; 0 while it has not
         self.shutting_down = False
+        self.stop_event = threading.Event()  # a fresh one per run; set to end the crawl early
+        self.stopped = False  # the last run ended because the user stopped it
 
     def mark_poll(self) -> None:
         with self.lock:
@@ -104,6 +109,14 @@ class AppState:
     def seconds_since_poll(self) -> float:
         with self.lock:
             return time.monotonic() - self.last_poll
+
+    def mark_bye(self) -> None:
+        with self.lock:
+            self.bye_at = time.monotonic()
+
+    def is_running(self) -> bool:
+        with self.lock:
+            return self.running
 
     def add_line(self, line: str) -> None:
         with self.lock:
@@ -143,6 +156,8 @@ class AppState:
                 'lines': self.lines[cursor:],
                 'cursor': len(self.lines),
                 'volumes': self.volume_titles,
+                'volumeRequest': self.volume_request,
+                'stopped': self.stopped,
                 'outputDir': self.output_dir,
             }
 
@@ -206,10 +221,20 @@ def install_progress_hooks(state: AppState) -> None:
         spider_class._convert_to_catalog_list = wrapped
 
 
-def page_is_gone(page_seen: bool, seconds_since_poll: float, grace: float = 12.0) -> bool:
-    """The page polls every second. Only judge it gone after it has polled at least once, so a
-    slow-starting browser is never mistaken for a closed one."""
-    return page_seen and seconds_since_poll > grace
+def page_is_gone(page_seen: bool, seconds_since_poll: float, running: bool = False,
+                 grace: float = 60.0) -> bool:
+    """Fallback for a page that vanished without saying goodbye (browser crash). The page polls
+    every second, but Chrome throttles or discards background tabs, so silence alone is only
+    trusted while nothing is downloading: a discarded tab must never kill a running crawl. Only
+    judge it gone after it has polled at least once, so a slow-starting browser is never mistaken
+    for a closed one."""
+    return page_seen and not running and seconds_since_poll > grace
+
+
+def page_said_bye(bye_at: float, last_poll: float, now: float, grace: float = 3.0) -> bool:
+    """The page sends a goodbye when it unloads. A reload also unloads, so the goodbye only counts
+    once the grace has passed without a newer poll from a reloaded page."""
+    return bye_at > 0 and last_poll < bye_at and now - bye_at > grace
 
 
 def close_browser(state: AppState) -> bool:
@@ -229,15 +254,21 @@ def make_volume_selector(state: AppState):
 
     def select(catalog_list: list) -> list:
         with state.lock:
+            state.volume_request += 1
             state.volume_titles = [volume.volume_title for volume in catalog_list]
-        state.volume_answer = None
+            state.volume_answer = None
         state.volume_answered.clear()
+        if state.stop_event.is_set():  # checked after clear(): a stop sets both events, in this order
+            raise CrawlStopped()
         state.volume_answered.wait()
         with state.lock:
             state.volume_titles = None
-        if not state.volume_answer:
+            answer = state.volume_answer
+        if state.stop_event.is_set():
+            raise CrawlStopped()
+        if not answer:
             raise RuntimeError('已取消：沒有選擇任何一卷。')
-        chosen = [catalog_list[row] for row in state.volume_answer]
+        chosen = [catalog_list[row] for row in answer]
         state.set_total_chapters(count_chapters(chosen))
         return chosen
 
@@ -252,9 +283,14 @@ def run_crawl(state: AppState, form: dict) -> None:
         state.add_line(f'開始下載書籍 {form["book_id"]}，輸出到 {form["output_dir"]}')
         linovel_module.Confirm = FixedAnswer(form['resume'])
         state.add_line('若偵測到上次未完成的進度：' + ('沿用' if form['resume'] else '捨棄重來'))
-        crawler = Linovelib2Epub(**build_kwargs(form))
+        crawler = Linovelib2Epub(**build_kwargs(form), stop_event=state.stop_event)
         state.crawler = crawler
         crawler.run()
+    except CrawlStopped:
+        state.add_line('已停止下載。')
+        with state.lock:
+            state.result = '已停止下載。'
+            state.stopped = True
     except BaseException as error:  # noqa: BLE001 - any failure must reach the page
         message = str(error) or type(error).__name__
         state.add_line(f'失敗：{message}')
@@ -350,8 +386,11 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == '/api/start':
             self._start(state, self._read_json())
         elif parsed.path == '/api/volumes':
-            state.volume_answer = self._read_json().get('selected') or []
-            state.volume_answered.set()
+            self._send_json({'ok': answer_volumes(state, self._read_json())})
+        elif parsed.path == '/api/stop':
+            self._send_json({'ok': request_stop(state)})
+        elif parsed.path == '/api/bye':  # sent by the page as it unloads
+            state.mark_bye()
             self._send_json({'ok': True})
         elif parsed.path == '/api/quit':
             self._send_json({'ok': True})
@@ -371,12 +410,38 @@ class Handler(BaseHTTPRequestHandler):
         with state.lock:
             state.running = True
             state.result = None
+            state.stopped = False
+            state.stop_event = threading.Event()
             state.output_dir = form['output_dir']
         state.reset_progress()
         install_progress_hooks(state)
         BaseLinovelibSpider._handle_select_volume = staticmethod(make_volume_selector(state))
         threading.Thread(target=run_crawl, args=(state, form), daemon=True).start()
         self._send_json({'ok': True})
+
+
+def answer_volumes(state: AppState, payload: dict) -> bool:
+    """Take the page's answer to the question it names. An answer to an earlier question (a stale
+    poll that re-showed it, a double click) is dropped so it cannot speak for the current one."""
+    with state.lock:
+        current = state.volume_titles is not None and payload.get('request') == state.volume_request
+        if current:
+            state.volume_answer = payload.get('selected') or []
+            state.volume_titles = None  # the very next poll must not show the question again
+    if current:
+        state.volume_answered.set()
+    return current
+
+
+def request_stop(state: AppState) -> bool:
+    """Ask the running crawl to stop. It ends at its next request and the page keeps working, so
+    another download can be started; only 結束程式 stops the server."""
+    with state.lock:
+        if not state.running:
+            return False
+        state.stop_event.set()
+    state.volume_answered.set()  # a crawl waiting for the volume choice has to wake up too
+    return True
 
 
 def stop_everything(server, reason: str) -> None:
@@ -394,13 +459,19 @@ def stop_everything(server, reason: str) -> None:
     threading.Thread(target=server.shutdown, daemon=True).start()
 
 
-def watch_page(server, grace: float = 12.0, interval: float = 1.0) -> None:
-    """Quit once the page stops polling, so closing the browser tab does not leave this running."""
+def watch_page(server, grace: float = 60.0, interval: float = 1.0) -> None:
+    """Quit when the page says goodbye and does not come back, so closing the tab does not leave
+    this running; and, as a fallback, when an idle page has been silent for a long time."""
     state = server.state
     while not state.shutting_down:
         time.sleep(interval)
-        if page_is_gone(state.page_seen, state.seconds_since_poll(), grace):
+        with state.lock:
+            bye_at, last_poll = state.bye_at, state.last_poll
+        if page_said_bye(bye_at, last_poll, time.monotonic()):
             stop_everything(server, '瀏覽器頁面已關閉，程式結束。')
+            return
+        if page_is_gone(state.page_seen, state.seconds_since_poll(), state.is_running(), grace):
+            stop_everything(server, '瀏覽器頁面已經很久沒有回應，程式結束。')
             return
 
 

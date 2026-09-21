@@ -377,7 +377,7 @@ def test_a_fetch_that_raises_counts_as_an_attempt_rather_than_looping(tmp_path, 
 def test_the_wait_grows_and_is_skipped_on_the_last_attempt(tmp_path, monkeypatch):
     spider = a_spider(tmp_path, monkeypatch)
     slept = []
-    monkeypatch.setattr('linovelib2epub.spider.linovelib_spider.sleep', lambda seconds: slept.append(seconds))
+    monkeypatch.setattr(spider, '_wait_unless_stopped', lambda seconds: slept.append(seconds))
 
     spider._pause_before_page_retry('http://x/1.html', 1)
     spider._pause_before_page_retry('http://x/1.html', 2)

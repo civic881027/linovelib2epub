@@ -429,8 +429,8 @@ class BaseLinovelibSpider(BaseNovelWebsiteSpider):
 
     def _apply_crawl_delay(self, delay_name):
         crawl_delay = self.spider_settings.get(delay_name, None)
+        self._wait_unless_stopped(crawl_delay or 0)
         if crawl_delay:
-            time.sleep(crawl_delay)
             self.logger.debug(f'Apply {delay_name}(s): {crawl_delay}')
 
     def _remove_duplicate_images_in_html(self, chapter_list):
@@ -491,7 +491,7 @@ class BaseLinovelibSpider(BaseNovelWebsiteSpider):
         pause = PAGE_RETRY_PAUSE_SECONDS * attempt
         self.logger.warning(f'{page_link} did not return the article page '
                             f'(attempt {attempt}/{PAGE_ATTEMPT_LIMIT}); waiting {pause}s.')
-        sleep(pause)
+        self._wait_unless_stopped(pause)
 
     def _give_up_on_page(self, page_link: str) -> None:
         raise PageContentAbnormalException(
@@ -691,6 +691,9 @@ class LinovelibSpiderMobile(BaseLinovelibSpider):
             self.logger.info(f'Succeed to get the catalog of book_id: {self.spider_settings["book_id"]}')
             catalog_html = book_catalog_rs
             catalog_list: List[CatalogLinovelibVolume] = self._convert_to_catalog_list(catalog_html)
+            if not catalog_list:
+                raise LinovelibException(f'No volume with chapters was found in the catalog of book '
+                                         f'{self.spider_settings["book_id"]}; the page layout may have changed.')
             if self.spider_settings['select_volume_mode']:
                 catalog_list = self._handle_select_volume(catalog_list)
 
@@ -1011,6 +1014,9 @@ class LinovelibSpiderPC(BaseLinovelibSpider):
 
             catalog_html = book_catalog_rs
             catalog_list: List[CatalogLinovelibVolume] = self._convert_to_catalog_list(catalog_html)
+            if not catalog_list:
+                raise LinovelibException(f'No volume with chapters was found in the catalog of book '
+                                         f'{self.spider_settings["book_id"]}; the page layout may have changed.')
             if self.spider_settings['select_volume_mode']:
                 catalog_list = self._handle_select_volume(catalog_list)
 
@@ -1164,8 +1170,9 @@ class LinovelibSpiderPC(BaseLinovelibSpider):
 
     def _convert_to_catalog_list(self, catalog_html) -> List[CatalogLinovelibVolume]:
         soup = BeautifulSoup(catalog_html, 'lxml')
-        volume_list_div = soup.select_one('#volume-list')
-        volumes = volume_list_div.select('.volume')
+        # A chapter listed before the first volume (e.g. 书籍信息) makes the page close #volume-list
+        # early, which leaves the volume blocks as its siblings, so look for them in the whole page.
+        volumes = soup.select('.volume')
 
         catalog_list: List[CatalogLinovelibVolume] = []
 
@@ -1174,28 +1181,37 @@ class LinovelibSpiderPC(BaseLinovelibSpider):
             cover_src = item.select_one('a.volume-cover > img').get('src')
             volume_title = item.select_one('.volume-info > .v-line').text
             chapters = item.select_one('.chapter-list').select('li a')
-
-            _current_chapters: List[CatalogLinovelibChapter] = []
-            new_volume = CatalogLinovelibVolume(
+            catalog_list.append(CatalogLinovelibVolume(
                 vid=idx + 1,
                 volume_title=volume_title,
-                chapters=_current_chapters,
+                chapters=self._to_catalog_chapters(chapters),
                 volume_cover=cover_src
-            )
-            catalog_list.append(new_volume)
-            for chapter in chapters:
-                chapter_href = chapter.get('href')
-                chapter_title = chapter.text
-                chapter_url = urljoin(f'{self.spider_settings["base_url"]}/novel', chapter_href)
-                new_chapter: CatalogLinovelibChapter = CatalogLinovelibChapter(
-                    chapter_title=chapter_title,
-                    chapter_url=chapter_url
-                )
-                _current_chapters.append(new_chapter)
+            ))
+
+        if not volumes:
+            # a book without volume divisions lists its chapters straight under #volume-list
+            volume_list_div = soup.select_one('#volume-list')
+            chapters = volume_list_div.select('li a') if volume_list_div else []
+            if chapters:
+                basic_info = getattr(self, '_novel_basic_info', None)
+                catalog_list.append(CatalogLinovelibVolume(
+                    vid=1,
+                    volume_title=basic_info[0] if basic_info else '',
+                    chapters=self._to_catalog_chapters(chapters)
+                ))
 
         # filter None chapter
         catalog_list = [catalog_volume for catalog_volume in catalog_list if catalog_volume.chapters]
         return catalog_list
+
+    def _to_catalog_chapters(self, anchors) -> List[CatalogLinovelibChapter]:
+        return [
+            CatalogLinovelibChapter(
+                chapter_title=chapter.text,
+                chapter_url=urljoin(f'{self.spider_settings["base_url"]}/novel', chapter.get('href'))
+            )
+            for chapter in anchors
+        ]
 
     def _expand_paginated_chapter_links(self, chapter: CatalogLinovelibChapter, url_next):
         if not self._is_valid_chapter_link(chapter.chapter_url):
