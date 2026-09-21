@@ -48,11 +48,14 @@ def test_a_zero_delay_still_notices_the_stop():
 
 
 def test_the_delay_runs_out_normally_while_no_stop_is_requested():
-    started = time.monotonic()
+    # Windows timers are coarse, so do not measure the wait; check it happened and did not raise
+    event = threading.Event()
+    waited = []
+    event.wait = lambda seconds: waited.append(seconds) or False  # timed out, no stop
 
-    a_spider(threading.Event(), chapter_crawl_delay=0.2)._apply_crawl_delay('chapter_crawl_delay')
+    a_spider(event, chapter_crawl_delay=3)._apply_crawl_delay('chapter_crawl_delay')
 
-    assert 0.2 <= time.monotonic() - started < 2
+    assert waited == [3]
 
 
 def test_without_a_stop_signal_the_delay_is_a_plain_sleep(monkeypatch):
